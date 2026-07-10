@@ -1,6 +1,6 @@
 # Martha
 
-A sister project of _The Perl Lazarus Project_
+A sister project of _The Perl Lazarus Project_ that is meant to assist Perl programmers to build Windows GUI EXE and installers, primarily targeting wxPerl applications on Windows. 
 
 ---
 
