@@ -96,9 +96,9 @@ EXE:             kephra.exe
 Built EXE Path:  C:\Projects\Kephra\dist\kephra.exe
 RELEASE:         release
 Installer:       C:\Projects\Kephra\release\kephra-setup.exe
+```
 
 # Screenshots
-## Screenshots
 
 | General Config | Makefile |
 |:---:|:---:|
