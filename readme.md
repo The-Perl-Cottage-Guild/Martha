@@ -4,6 +4,14 @@ A sister project of _The Perl Lazarus Project_
 
 ---
 
+## Screenshots
+
+| General Config | Makefile |
+|:---:|:---:|
+| <img width="500" alt="Martha General Config tab" src="https://github.com/user-attachments/assets/368f0ff9-1673-48f2-9767-7637c12e34ec" /> | <img width="500" alt="Martha Makefile tab" src="https://github.com/user-attachments/assets/fa658bde-7c00-4bd2-ba38-d142f2d6f2a2" /> |
+| **Inno Setup** | **Credits** |
+| <img width="500" alt="Martha Inno Setup tab" src="https://github.com/user-attachments/assets/87ef47f0-edb9-4556-b612-ff82e4118cbc" /> | <img width="500" alt="Martha Credits tab" src="https://github.com/user-attachments/assets/96b1fca4-a25a-4f37-bb4a-1c24164ce4ea" /> |
+
 ## The Perl Lazarus Project
 
 There is no direct equivalent to the Free Pascal Lazarus IDE in the Perl ecosystem.
@@ -97,15 +105,6 @@ Built EXE Path:  C:\Projects\Kephra\dist\kephra.exe
 RELEASE:         release
 Installer:       C:\Projects\Kephra\release\kephra-setup.exe
 ```
-
-# Screenshots
-
-| General Config | Makefile |
-|:---:|:---:|
-| <img width="500" alt="Martha General Config tab" src="https://github.com/user-attachments/assets/368f0ff9-1673-48f2-9767-7637c12e34ec" /> | <img width="500" alt="Martha Makefile tab" src="https://github.com/user-attachments/assets/fa658bde-7c00-4bd2-ba38-d142f2d6f2a2" /> |
-| **Inno Setup** | **Credits** |
-| <img width="500" alt="Martha Inno Setup tab" src="https://github.com/user-attachments/assets/87ef47f0-edb9-4556-b612-ff82e4118cbc" /> | <img width="500" alt="Martha Credits tab" src="https://github.com/user-attachments/assets/96b1fca4-a25a-4f37-bb4a-1c24164ce4ea" /> |
-
 
 
 
