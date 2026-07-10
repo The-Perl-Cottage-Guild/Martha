@@ -28,6 +28,17 @@ use Wx qw[:everything];
 use base qw(Wx::Frame);
 use strict;
 
+# Notebook page indexes for the four-tab wxGlade layout.
+# Keep these outside wxGlade-managed regions so regeneration does not remove them.
+use constant {
+    TAB_GENERAL  => 0,
+    TAB_MAKEFILE => 1,
+    TAB_INNO     => 2,
+    TAB_CREDITS  => 3,
+
+    PROJECT_FORMAT_VERSION => 2,
+};
+
 sub new {
     my( $self, $parent, $id, $title, $pos, $size, $style, $name ) = @_;
     $parent = undef              unless defined $parent;
@@ -168,7 +179,6 @@ sub new {
     $self->{button_5} = Wx::Button->new($self->{notebook_1_pane_1}, wxID_ANY, "Run EXE");
     $self->{button_5}->SetToolTip("If activated, this button will attempt to execute the file defined in the loaded Makefile as the EXE variable");
     $self->{makefile_action_row}->Add($self->{button_5}, 0, wxEXPAND|wxLEFT, 6);
-    
     $self->{makefile_source_grid} = Wx::FlexGridSizer->new(1, 2, 6, 8);
     $self->{sizer_2}->Add($self->{makefile_source_grid}, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
     
@@ -447,7 +457,7 @@ sub new {
 
             # Do NOT touch ISS unless tab is active
             my $cur = $win->{notebook_1}->GetSelection;
-            if (defined($cur) && $cur == 1) {
+            if (defined($cur) && $cur == TAB_INNO) {
                 $win->_seed_iss_fields_from_script();
             }
         }
@@ -466,7 +476,7 @@ sub new {
     Wx::Event::EVT_NOTEBOOK_PAGE_CHANGED($self, $self->{notebook_1}, sub {
         my ($win, $evt) = @_;
         my $idx = $evt->GetSelection; # new selection
-        if (defined($idx) && $idx == 1) { # ISS tab
+        if (defined($idx) && $idx == TAB_INNO) { # ISS tab
             my $p = $win->{perl_script_path}->GetValue // '';
             $p =~ s/^\s+|\s+$//g;
             if ($p && $win->{_iss_pending_seed}) {
@@ -993,8 +1003,8 @@ sub _project_state_hash {
 
     return {
         format              => 'wxperl-helper-project',
-        version             => 1,
-        selected_tab        => ($self->{notebook_1} ? $self->{notebook_1}->GetSelection : 0),
+        version             => PROJECT_FORMAT_VERSION,
+        selected_tab        => ($self->{notebook_1} ? $self->{notebook_1}->GetSelection : TAB_GENERAL),
         perl_script_path    => ($self->{perl_script_path}->GetValue // ''),
         makefile_saved_path => ($self->{_makefile_saved_path} // ''),
         makefile_text       => $self->_current_makefile_text(),
@@ -1082,6 +1092,21 @@ sub _apply_project_state {
     $self->_refresh_run_makefile_button_state();
 
     my $tab = $data->{selected_tab};
+
+    # Version 1 projects used the original three-tab layout:
+    #   0 = Makefile, 1 = Inno Setup, 2 = Help.
+    # Translate those indexes into the new four-tab layout.
+    if (($data->{version} // 1) < PROJECT_FORMAT_VERSION && defined $tab) {
+        my %old_to_new_tab = (
+            0 => TAB_MAKEFILE,
+            1 => TAB_INNO,
+            2 => TAB_CREDITS,
+        );
+
+        $tab = $old_to_new_tab{$tab}
+            if exists $old_to_new_tab{$tab};
+    }
+
     if (defined($tab) && $self->{notebook_1}) {
         my $count = $self->{notebook_1}->GetPageCount;
         if ($tab >= 0 && $tab < $count) {
@@ -1147,7 +1172,7 @@ sub select_perl_script {
         $self->{_iss_pending_seed} = 1;
 
         my $cur = $self->{notebook_1}->GetSelection;
-        if (defined($cur) && $cur == 1) {
+        if (defined($cur) && $cur == TAB_INNO) {
             $self->_seed_iss_fields_from_script();
         }
     }
@@ -1562,7 +1587,7 @@ sub run_pp_autolink {
     $self->_compute_project_layout_from_script($script);
     $self->{_iss_pending_seed} = 1;
     my $cur = $self->{notebook_1}->GetSelection;
-    if (defined($cur) && $cur == 1) {
+    if (defined($cur) && $cur == TAB_INNO) {
         $self->_seed_iss_fields_from_script();
     }
 
@@ -1826,7 +1851,7 @@ sub generate_iss_preview {
     # end wxGlade
 
     my $cur = $self->{notebook_1}->GetSelection;
-    if (!defined($cur) || $cur != 1) {
+    if (!defined($cur) || $cur != TAB_INNO) {
         $self->_append_io("[iss] Not generating preview (ISS tab not active).\n");
         return;
     }
@@ -1999,7 +2024,7 @@ sub save_iss_file {
     # end wxGlade
 
     my $cur = $self->{notebook_1}->GetSelection;
-    if (!defined($cur) || $cur != 1) {
+    if (!defined($cur) || $cur != TAB_INNO) {
         $self->_append_io("[iss] Not saving (ISS tab not active).\n");
         return;
     }
@@ -2054,7 +2079,7 @@ sub compile_iss_file {
     # end wxGlade
 
     my $cur = $self->{notebook_1}->GetSelection;
-    if (!defined($cur) || $cur != 1) {
+    if (!defined($cur) || $cur != TAB_INNO) {
         $self->_append_io("[iss] Not compiling (ISS tab not active).\n");
         return;
     }
@@ -2499,7 +2524,7 @@ sub start_new_project {
     $self->{iss_chk_kill_running}->SetValue(1)                           if $self->{iss_chk_kill_running};
     $self->{text_iss_exe}->SetValue('%LOCALAPPDATA%\\Programs\\Inno Setup 6\\ISCC.exe') if $self->{text_iss_exe};
 
-    $self->{notebook_1}->SetSelection(0) if $self->{notebook_1};
+    $self->{notebook_1}->SetSelection(TAB_GENERAL) if $self->{notebook_1};
     $self->_refresh_run_makefile_button_state();
     $self->_append_io("[project] Started new project.\n");
 }
