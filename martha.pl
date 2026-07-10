@@ -36,7 +36,7 @@ use constant {
     TAB_INNO     => 2,
     TAB_CREDITS  => 3,
 
-    PROJECT_FORMAT_VERSION => 2,
+    PROJECT_FORMAT_VERSION => 3,
 };
 
 sub new {
@@ -462,7 +462,9 @@ sub new {
     # BEGIN custom code (safe from wxGlade overwrites)
     # -------------------------
 
-    # State used for "only seed ISS when in focus + file selected"
+    # Runtime/project state.  The General Config tab is the sole owner of
+    # source, DIST, EXE, and RELEASE.  The Makefile and Inno Setup tabs only
+    # mirror values derived from those canonical fields.
     $self->{_iss_seeded_from_script} = 0;
     $self->{_iss_pending_seed}       = 0;
     $self->{_script_abs}             = '';
@@ -475,40 +477,48 @@ sub new {
     $self->{_makefile_has_run}       = 0;
     $self->{_last_make_exit_code}    = undef;
 
-    $self->{_iss_saved_path}         = '';
-    $self->{_iss_last_installer_path}= '';
-    $self->{_iss_has_compiled}       = 0;
-    $self->{_iss_last_compile_exit}  = undef;
+    $self->{_iss_saved_path}          = '';
+    $self->{_iss_last_installer_path} = '';
+    $self->{_iss_has_compiled}        = 0;
+    $self->{_iss_last_compile_exit}   = undef;
 
-    $self->{_project_saved_path}     = '';
+    $self->{_project_saved_path} = '';
 
     $self->{button_2}->Enable(0) if $self->{button_2};
     $self->{button_5}->Enable(0) if $self->{button_5};
 
-    # Background worker comms
+    # Background worker communications.
     $self->{_q}     = Thread::Queue->new();
     $self->{_timer} = Wx::Timer->new($self, wxID_ANY);
     Wx::Event::EVT_TIMER($self, $self->{_timer}, sub { $self->_drain_worker_queue });
-    $self->_apply_safe_default_paths();
-    $self->{_timer}->Start(100); # 100ms poll
 
-    # If user types/pastes a valid file into the DLL tab path box,
-    # compute project layout and mark ISS as "pending seed".
+    $self->_apply_safe_default_paths();
+    $self->_bind_canonical_field_events();
+    $self->_sync_derived_fields();
+    $self->{_timer}->Start(100); # 100 ms poll
+
+    # A source may be typed or pasted as well as selected with Browse.
     Wx::Event::EVT_TEXT($self, $self->{perl_script_path}, sub {
         my ($win, $evt) = @_;
 
-        my $p = $win->{perl_script_path}->GetValue // '';
-        $p =~ s/^\s+|\s+$//g;
+        my $p = _trim($win->{perl_script_path}->GetValue // '');
 
         if ($p && -f $p) {
             $win->_compute_project_layout_from_script($p);
             $win->{_iss_pending_seed} = 1;
 
-            # Do NOT touch ISS unless tab is active
             my $cur = $win->{notebook_1}->GetSelection;
             if (defined($cur) && $cur == TAB_INNO) {
                 $win->_seed_iss_fields_from_script();
             }
+        }
+        elsif (!$p) {
+            $win->{_script_abs}    = '';
+            $win->{_proj_root}     = '';
+            $win->{_installer_dir} = '';
+            $win->{_dist_dir}      = '';
+            $win->{_release_dir}   = '';
+            $win->_sync_derived_fields();
         }
 
         $evt->Skip;
@@ -521,17 +531,21 @@ sub new {
         $evt->Skip;
     });
 
-    # Seed ISS on tab focus (only if pending and script selected)
+    # Refresh all read-only mirrors whenever the user changes tabs.  Seed
+    # installer defaults only when entering the Inno Setup page.
     Wx::Event::EVT_NOTEBOOK_PAGE_CHANGED($self, $self->{notebook_1}, sub {
         my ($win, $evt) = @_;
-        my $idx = $evt->GetSelection; # new selection
-        if (defined($idx) && $idx == TAB_INNO) { # ISS tab
-            my $p = $win->{perl_script_path}->GetValue // '';
-            $p =~ s/^\s+|\s+$//g;
+        my $idx = $evt->GetSelection;
+
+        $win->_sync_derived_fields();
+
+        if (defined($idx) && $idx == TAB_INNO) {
+            my $p = _trim($win->{perl_script_path}->GetValue // '');
             if ($p && $win->{_iss_pending_seed}) {
                 $win->_seed_iss_fields_from_script();
             }
         }
+
         $evt->Skip;
     });
 
@@ -545,9 +559,207 @@ sub new {
 sub _append_io {
     my ($self, $text) = @_;
     return unless defined $text && length $text;
+    return unless $self->{txt_cmd_io};
 
     $self->{txt_cmd_io}->AppendText($text);
     $self->{txt_cmd_io}->ShowPosition($self->{txt_cmd_io}->GetLastPosition);
+}
+
+sub _change_control_value {
+    my ($self, $name, $value) = @_;
+    my $ctrl = $self->{$name} or return;
+    $value //= '';
+    $ctrl->ChangeValue($value);
+}
+
+sub _is_absolute_path {
+    my ($path) = @_;
+    $path = _trim($path);
+    return 0 if $path eq '';
+
+    return 1 if File::Spec->file_name_is_absolute($path);
+    return 1 if $path =~ /^[A-Za-z]:[\\\/]/;
+    return 1 if $path =~ m{^[\\\/]{2}};
+    return 0;
+}
+
+sub _project_root_path {
+    my ($self) = @_;
+
+    my $root = _trim($self->{_proj_root});
+    return $root if $root;
+
+    my $script = $self->{perl_script_path}
+        ? _trim($self->{perl_script_path}->GetValue)
+        : '';
+
+    return '' if !$script;
+    return File::Basename::dirname(_safe_abs($script));
+}
+
+sub _resolve_project_dir {
+    my ($self, $value) = @_;
+    $value = _expand_env_vars_windows($value);
+    return '' if !$value;
+
+    return _safe_abs($value) if _is_absolute_path($value);
+
+    my $root = $self->_project_root_path();
+    return $root ? File::Spec->rel2abs($value, $root) : $value;
+}
+
+sub _resolve_project_file {
+    my ($self, $value) = @_;
+    $value = _expand_env_vars_windows($value);
+    return '' if !$value;
+
+    return $value if _is_absolute_path($value);
+
+    my $root = $self->_project_root_path();
+    return $root ? File::Spec->rel2abs($value, $root) : $value;
+}
+
+sub _path_for_project_field {
+    my ($self, $path) = @_;
+    $path = _trim($path);
+    return '' if !$path;
+
+    my $root = $self->_project_root_path();
+    return $path if !$root || !_is_absolute_path($path);
+
+    my $rel = eval { File::Spec->abs2rel($path, $root) };
+    return $path if !$rel || $rel =~ /^\.\.(?:[\\\/]|$)/;
+    return $rel;
+}
+
+sub _configured_exe_name {
+    my ($self) = @_;
+    return '' if !$self->{makefile_exe};
+
+    my $raw = _trim($self->{makefile_exe}->GetValue);
+    return '' if !$raw;
+
+    return File::Basename::basename($raw);
+}
+
+sub _configured_dist_path {
+    my ($self) = @_;
+    return '' if !$self->{makefile_dist};
+    return $self->_resolve_project_dir($self->{makefile_dist}->GetValue);
+}
+
+sub _configured_release_path {
+    my ($self) = @_;
+    return '' if !$self->{makefile_release};
+    return $self->_resolve_project_dir($self->{makefile_release}->GetValue);
+}
+
+sub _built_exe_path {
+    my ($self) = @_;
+    my $dist = $self->_configured_dist_path();
+    my $exe  = $self->_configured_exe_name();
+    return '' if !$dist || !$exe;
+    return File::Spec->catfile($dist, $exe);
+}
+
+sub _installer_exe_path {
+    my ($self) = @_;
+    my $release = $self->_configured_release_path();
+    my $base = $self->{iss_output_base}
+        ? _trim($self->{iss_output_base}->GetValue)
+        : '';
+
+    $base =~ s/\.exe\z//i;
+    return '' if !$release || !$base;
+    return File::Spec->catfile($release, $base . '.exe');
+}
+
+sub _ensure_default_exe_name_from_script {
+    my ($self, $script) = @_;
+    return if !$self->{makefile_exe};
+    return if _trim($self->{makefile_exe}->GetValue);
+
+    $script = _trim($script);
+    return if !$script;
+
+    my $base = File::Basename::basename($script);
+    $base =~ s/\.(?:pl|pm)\z//i;
+    return if !$base;
+
+    $self->{makefile_exe}->ChangeValue($base . '.exe');
+}
+
+sub _normalize_exe_configuration {
+    my ($self) = @_;
+    return if !$self->{makefile_exe};
+
+    my $raw = _trim($self->{makefile_exe}->GetValue);
+    return if !$raw;
+
+    my $name = File::Basename::basename($raw);
+    my $dir  = File::Basename::dirname($raw);
+
+    if ($raw ne $name && $dir && $dir ne '.') {
+        $self->{makefile_dist}->ChangeValue(
+            $self->_path_for_project_field($dir)
+        ) if $self->{makefile_dist};
+    }
+
+    $self->{makefile_exe}->ChangeValue($name);
+}
+
+sub _sync_derived_fields {
+    my ($self) = @_;
+
+    my $root      = $self->_project_root_path();
+    my $source    = $self->{perl_script_path}
+        ? _trim($self->{perl_script_path}->GetValue)
+        : '';
+    my $exe_name  = $self->_configured_exe_name();
+    my $built_exe = $self->_built_exe_path();
+    my $release   = $self->_configured_release_path();
+    my $installer = $self->_installer_exe_path();
+
+    $self->{_proj_root}   = $root if $root;
+    $self->{_dist_dir}    = $self->_configured_dist_path();
+    $self->{_release_dir} = $release;
+    $self->{_installer_dir} = $root
+        ? File::Spec->catdir($root, 'installer')
+        : '';
+
+    $self->_change_control_value('project_root_path',          $root);
+    $self->_change_control_value('built_exe_path',             $built_exe);
+    $self->_change_control_value('makefile_source_summary',    $source);
+    $self->_change_control_value('makefile_target_summary',    $built_exe);
+    $self->_change_control_value('iss_app_exe',                $exe_name);
+    $self->_change_control_value('iss_dist_exe_path',          $built_exe);
+    $self->_change_control_value('iss_output_dir',             $release);
+    $self->_change_control_value('iss_installer_exe_path',     $installer);
+}
+
+sub _bind_canonical_field_events {
+    my ($self) = @_;
+
+    for my $name (qw(makefile_dist makefile_exe makefile_release)) {
+        my $ctrl = $self->{$name} or next;
+        Wx::Event::EVT_TEXT($self, $ctrl, sub {
+            my ($win, $evt) = @_;
+            $win->_sync_derived_fields();
+            $win->_reset_run_exe_state();
+            $evt->Skip;
+        });
+    }
+
+    if (my $ctrl = $self->{iss_output_base}) {
+        Wx::Event::EVT_TEXT($self, $ctrl, sub {
+            my ($win, $evt) = @_;
+            $win->{_iss_has_compiled}        = 0;
+            $win->{_iss_last_compile_exit}   = undef;
+            $win->{_iss_last_installer_path} = '';
+            $win->_sync_derived_fields();
+            $evt->Skip;
+        });
+    }
 }
 
 sub _set_run_exe_button_state {
@@ -661,21 +873,18 @@ sub _drain_worker_queue {
 sub _apply_safe_default_paths {
     my ($self) = @_;
 
-    my $default_cbin    = join('\\', 'c:', 'sw', 'pdl', 'c', 'bin');
-    my $default_dist    = 'dist';
-    my $default_release = 'release';
-    my $default_exe     = ""; 
+    my $default_cbin = join('\\', 'c:', 'sw', 'pdl', 'c', 'bin');
 
-    my $default_iss_dist = join('\\', '..', 'dist', 'myprog.exe');
-    my $default_iss_out  = join('\\', '..', 'release');
+    $self->{makefile_cbin}->ChangeValue($default_cbin)
+        if $self->{makefile_cbin};
+    $self->{makefile_dist}->ChangeValue('dist')
+        if $self->{makefile_dist};
+    $self->{makefile_release}->ChangeValue('release')
+        if $self->{makefile_release};
+    $self->{makefile_exe}->ChangeValue('')
+        if $self->{makefile_exe};
 
-    $self->{makefile_cbin}->ChangeValue($default_cbin)         if $self->{makefile_cbin};
-    $self->{makefile_dist}->ChangeValue($default_dist)         if $self->{makefile_dist};
-    $self->{makefile_release}->ChangeValue($default_release)   if $self->{makefile_release};
-    $self->{makefile_exe}->ChangeValue($default_exe)           if $self->{makefile_exe};
-
-    $self->{iss_dist_exe_path}->ChangeValue($default_iss_dist) if $self->{iss_dist_exe_path};
-    $self->{iss_output_dir}->ChangeValue($default_iss_out)     if $self->{iss_output_dir};
+    $self->_sync_derived_fields();
 }
 
 sub _trim {
@@ -775,45 +984,30 @@ sub _compute_project_layout_from_script {
     $self->{_script_abs}    = $script_abs;
     $self->{_proj_root}     = $proj_root;
     $self->{_installer_dir} = File::Spec->catdir($proj_root, 'installer');
-    $self->{_dist_dir}      = File::Spec->catdir($proj_root, 'dist');
-    $self->{_release_dir}   = File::Spec->catdir($proj_root, 'release');
+
+    $self->_ensure_default_exe_name_from_script($script_abs);
+    $self->_sync_derived_fields();
 }
 
 sub _seed_iss_fields_from_script {
     my ($self) = @_;
 
-    my $script_abs = $self->{_script_abs} || '';
+    my $script_abs = _trim($self->{_script_abs});
     return if !$script_abs;
 
-    my $proj_root     = $self->{_proj_root}     || File::Basename::dirname($script_abs);
-    my $installer_dir = $self->{_installer_dir} || File::Spec->catdir($proj_root, 'installer');
-    my $dist_dir      = $self->{_dist_dir}      || File::Spec->catdir($proj_root, 'dist');
-    my $release_dir   = $self->{_release_dir}   || File::Spec->catdir($proj_root, 'release');
+    $self->_ensure_default_exe_name_from_script($script_abs);
 
     my $base = File::Basename::basename($script_abs);
-    $base =~ s/\.(pl|pm)$//i;
+    $base =~ s/\.(?:pl|pm)\z//i;
 
-    my $exe_name = $base . ".exe";
-    my $out_base = $base . "-setup";
-
-    if (!$self->{_iss_seeded_from_script}) {
-        $self->{iss_app_exe}->SetValue($exe_name);
-        $self->{iss_output_base}->SetValue($out_base);
+    if (!$self->{_iss_seeded_from_script} && $self->{iss_output_base}) {
+        my $current = _trim($self->{iss_output_base}->GetValue);
+        if (!$current || $current eq 'myprog-setup') {
+            $self->{iss_output_base}->ChangeValue($base . '-setup');
+        }
     }
 
-    my $dist_exe_abs = File::Spec->catfile($dist_dir, $exe_name);
-    my $dist_exe_rel = _abs2rel_if_possible($installer_dir, $dist_exe_abs);
-    $self->{iss_dist_exe_path}->SetValue($dist_exe_rel);
-
-    my $out_rel = _abs2rel_if_possible($installer_dir, $release_dir);
-    $self->{iss_output_dir}->SetValue($out_rel);
-
-    my $icon = _trim($self->{iss_icon_path}->GetValue);
-    if ($icon) {
-        my $icon_rel = _abs2rel_if_possible($installer_dir, $icon);
-        $self->{iss_icon_path}->SetValue($icon_rel);
-    }
-
+    $self->_sync_derived_fields();
     $self->{_iss_seeded_from_script} = 1;
     $self->{_iss_pending_seed}       = 0;
 }
@@ -926,20 +1120,9 @@ sub _resolve_path_from_base {
 sub _compute_expected_installer_path {
     my ($self, $iss_path) = @_;
 
-    $iss_path = _trim($iss_path);
-    return '' if !$iss_path;
-
-    my $iss_dir = File::Basename::dirname($iss_path);
-    my $outdir  = _trim($self->{iss_output_dir}->GetValue);
-    my $base    = _trim($self->{iss_output_base}->GetValue);
-
-    return '' if !$base;
-
-    my $resolved_outdir = _resolve_path_from_base($iss_dir, $outdir);
-    return '' if !$resolved_outdir;
-
-    my $installer = File::Spec->catfile($resolved_outdir, $base . '.exe');
-    return $installer;
+    # The installer target is canonical project state.  It does not depend on
+    # where the .iss source happens to be saved.
+    return $self->_installer_exe_path();
 }
 
 sub _parse_bool_from_iss {
@@ -952,48 +1135,70 @@ sub _load_iss_into_form {
 
     my %vals;
 
-    if ($text =~ /^\s*#define\s+MyAppName\s+"([^"]*)"/mi) {
-        $vals{app_name} = $1;
-    }
-    if ($text =~ /^\s*#define\s+MyAppExe\s+"([^"]*)"/mi) {
-        $vals{app_exe} = $1;
-    }
-    if ($text =~ /^\s*#define\s+MyAppVersion\s+"([^"]*)"/mi) {
-        $vals{app_version} = $1;
-    }
-    if ($text =~ /^\s*#define\s+MyAppPublisher\s+"([^"]*)"/mi) {
-        $vals{app_publisher} = $1;
-    }
-    if ($text =~ /^\s*AppId\s*=\s*(.+?)\s*$/mi) {
-        $vals{appid} = _trim($1);
-    }
-    if ($text =~ /^\s*OutputDir\s*=\s*(.+?)\s*$/mi) {
-        $vals{output_dir} = _trim($1);
-    }
-    if ($text =~ /^\s*OutputBaseFilename\s*=\s*(.+?)\s*$/mi) {
-        $vals{output_base} = _trim($1);
-    }
-    if ($text =~ /^\s*SetupIconFile\s*=\s*(.+?)\s*$/mi) {
-        $vals{icon_path} = _trim($1);
-    }
-    if ($text =~ /^\s*Source:\s*"([^"]+)"\s*;\s*DestDir:\s*"\{app\}"/mi) {
-        $vals{dist_exe_path} = $1;
-    }
+    $vals{app_name} = $1
+        if $text =~ /^\s*#define\s+MyAppName\s+"([^"]*)"/mi;
+    $vals{app_exe} = $1
+        if $text =~ /^\s*#define\s+MyAppExe\s+"([^"]*)"/mi;
+    $vals{app_version} = $1
+        if $text =~ /^\s*#define\s+MyAppVersion\s+"([^"]*)"/mi;
+    $vals{app_publisher} = $1
+        if $text =~ /^\s*#define\s+MyAppPublisher\s+"([^"]*)"/mi;
+    $vals{appid} = _trim($1)
+        if $text =~ /^\s*AppId\s*=\s*(.+?)\s*$/mi;
+    $vals{output_dir} = _trim($1)
+        if $text =~ /^\s*OutputDir\s*=\s*(.+?)\s*$/mi;
+    $vals{output_base} = _trim($1)
+        if $text =~ /^\s*OutputBaseFilename\s*=\s*(.+?)\s*$/mi;
+    $vals{icon_path} = _trim($1)
+        if $text =~ /^\s*SetupIconFile\s*=\s*(.+?)\s*$/mi;
+    $vals{dist_exe_path} = $1
+        if $text =~ /^\s*Source:\s*"([^"]+)"\s*;\s*DestDir:\s*"\{app\}"/mi;
 
     my $per_user = ($text =~ /^\s*PrivilegesRequired\s*=\s*lowest\s*$/mi) ? 1 : 0;
     my $desktop  = _parse_bool_from_iss($text, qr/^\s*Name:\s*"desktopicon"\s*;/mi);
     my $launch   = _parse_bool_from_iss($text, qr/^\s*Filename:\s*"\{app\}\\\{#MyAppExe\}"\s*;\s*Description:\s*"Launch/mis);
     my $kill     = _parse_bool_from_iss($text, qr/taskkill\s+\/IM\s+"\{#MyAppExe\}"/mis);
 
-    $self->{iss_app_name}->SetValue($vals{app_name})             if exists $vals{app_name};
-    $self->{iss_app_exe}->SetValue($vals{app_exe})               if exists $vals{app_exe};
-    $self->{iss_app_version}->SetValue($vals{app_version})       if exists $vals{app_version};
-    $self->{iss_app_publisher}->SetValue($vals{app_publisher})   if exists $vals{app_publisher};
-    $self->{iss_appid}->SetValue($vals{appid})                   if exists $vals{appid};
-    $self->{iss_output_dir}->SetValue($vals{output_dir})         if exists $vals{output_dir};
-    $self->{iss_output_base}->SetValue($vals{output_base})       if exists $vals{output_base};
-    $self->{iss_icon_path}->SetValue($vals{icon_path})           if exists $vals{icon_path};
-    $self->{iss_dist_exe_path}->SetValue($vals{dist_exe_path})   if exists $vals{dist_exe_path};
+    $self->{iss_app_name}->SetValue($vals{app_name})
+        if exists $vals{app_name};
+    $self->{iss_app_version}->SetValue($vals{app_version})
+        if exists $vals{app_version};
+    $self->{iss_app_publisher}->SetValue($vals{app_publisher})
+        if exists $vals{app_publisher};
+    $self->{iss_appid}->SetValue($vals{appid})
+        if exists $vals{appid};
+    $self->{iss_output_base}->SetValue($vals{output_base})
+        if exists $vals{output_base};
+    $self->{iss_icon_path}->SetValue($vals{icon_path})
+        if exists $vals{icon_path};
+
+    my $iss_dir = _trim($path)
+        ? File::Basename::dirname($path)
+        : ($self->_project_root_path() || '');
+
+    # Loading an ISS updates the canonical General Config fields rather than
+    # creating competing editable copies on the Inno tab.
+    if (exists $vals{dist_exe_path}) {
+        my $built = _resolve_path_from_base($iss_dir, $vals{dist_exe_path});
+        if ($built) {
+            $self->{makefile_exe}->SetValue(File::Basename::basename($built));
+            $self->{makefile_dist}->SetValue(
+                $self->_path_for_project_field(File::Basename::dirname($built))
+            );
+        }
+    }
+    elsif (exists $vals{app_exe}) {
+        $self->{makefile_exe}->SetValue(
+            File::Basename::basename($vals{app_exe})
+        );
+    }
+
+    if (exists $vals{output_dir}) {
+        my $release = _resolve_path_from_base($iss_dir, $vals{output_dir});
+        $self->{makefile_release}->SetValue(
+            $self->_path_for_project_field($release)
+        ) if $release;
+    }
 
     $self->{iss_install_scope}->SetSelection($per_user ? 0 : 1);
     $self->{iss_chk_desktop_icon}->SetValue($desktop ? 1 : 0);
@@ -1002,14 +1207,12 @@ sub _load_iss_into_form {
 
     if (_trim($path)) {
         $self->{_iss_saved_path} = $path;
-        my $iss_dir = File::Basename::dirname($path);
-
-        if (-d $iss_dir) {
-            $self->{_installer_dir} = $iss_dir;
-        }
+        $self->{_installer_dir}  = File::Basename::dirname($path);
     }
-}
 
+    $self->_normalize_exe_configuration();
+    $self->_sync_derived_fields();
+}
 
 sub _project_default_dir {
     my ($self) = @_;
@@ -1040,7 +1243,7 @@ sub _project_default_name {
     my $script = _trim($self->{perl_script_path}->GetValue);
     if ($script) {
         my $base = File::Basename::basename($script);
-        $base =~ s/\.[^.]+$//;
+        $base =~ s/\.(?:pl|pm)\z//i;
         return $base . '.wxp';
     }
 
@@ -1068,12 +1271,9 @@ sub _project_state_hash {
         },
         iss_fields          => {
             app_name      => ($self->{iss_app_name}->GetValue // ''),
-            app_exe       => ($self->{iss_app_exe}->GetValue // ''),
             app_version   => ($self->{iss_app_version}->GetValue // ''),
             app_publisher => ($self->{iss_app_publisher}->GetValue // ''),
             appid         => ($self->{iss_appid}->GetValue // ''),
-            dist_exe_path => ($self->{iss_dist_exe_path}->GetValue // ''),
-            output_dir    => ($self->{iss_output_dir}->GetValue // ''),
             output_base   => ($self->{iss_output_base}->GetValue // ''),
             icon_path     => ($self->{iss_icon_path}->GetValue // ''),
             install_scope => ($self->{iss_install_scope}->GetSelection // 0),
@@ -1089,9 +1289,10 @@ sub _apply_project_state {
     my ($self, $data, $path) = @_;
 
     $data ||= {};
+    my $version = $data->{version} // 1;
 
     my $script = _trim($data->{perl_script_path});
-    $self->{perl_script_path}->SetValue($script);
+    $self->{perl_script_path}->ChangeValue($script);
 
     if ($script && -f $script) {
         $self->_compute_project_layout_from_script($script);
@@ -1099,40 +1300,82 @@ sub _apply_project_state {
     }
 
     my $make = $data->{makefile_fields} || {};
-    $self->{makefile_cbin}->SetValue($make->{cbin} // '');
-    $self->{makefile_dist}->SetValue($make->{dist} // '');
-    $self->{makefile_release}->SetValue($make->{release} // '');
-    $self->{makefile_exe}->SetValue($make->{exe} // '');
+    my $iss  = $data->{iss_fields}      || {};
 
-    my $iss = $data->{iss_fields} || {};
+    my $cbin    = $make->{cbin}    // '';
+    my $dist    = $make->{dist}    // '';
+    my $release = $make->{release} // '';
+    my $exe     = $make->{exe}     // '';
+
+    # Version 1/2 projects may contain duplicate path values under iss_fields.
+    # Import them only when the canonical General Config value is absent.
+    $exe ||= $iss->{app_exe} // '';
+
+    my $legacy_iss_base = _trim($data->{iss_saved_path})
+        ? File::Basename::dirname($data->{iss_saved_path})
+        : ($self->{_installer_dir} || $self->_project_root_path() || '');
+
+    if (!$dist && _trim($iss->{dist_exe_path})) {
+        my $legacy_built = _resolve_path_from_base(
+            $legacy_iss_base,
+            $iss->{dist_exe_path}
+        );
+        if ($legacy_built) {
+            $dist ||= $self->_path_for_project_field(
+                File::Basename::dirname($legacy_built)
+            );
+            $exe ||= File::Basename::basename($legacy_built);
+        }
+    }
+
+    if (!$release && _trim($iss->{output_dir})) {
+        my $legacy_release = _resolve_path_from_base(
+            $legacy_iss_base,
+            $iss->{output_dir}
+        );
+        $release = $self->_path_for_project_field($legacy_release)
+            if $legacy_release;
+    }
+
+    $dist    ||= 'dist';
+    $release ||= 'release';
+
+    $self->{makefile_cbin}->ChangeValue($cbin);
+    $self->{makefile_dist}->ChangeValue($dist);
+    $self->{makefile_release}->ChangeValue($release);
+    $self->{makefile_exe}->ChangeValue($exe);
+    $self->_normalize_exe_configuration();
+
     $self->{iss_app_name}->SetValue($iss->{app_name} // '');
-    $self->{iss_app_exe}->SetValue($iss->{app_exe} // '');
     $self->{iss_app_version}->SetValue($iss->{app_version} // '');
     $self->{iss_app_publisher}->SetValue($iss->{app_publisher} // '');
     $self->{iss_appid}->SetValue($iss->{appid} // '');
-    $self->{iss_dist_exe_path}->SetValue($iss->{dist_exe_path} // '');
-    $self->{iss_output_dir}->SetValue($iss->{output_dir} // '');
     $self->{iss_output_base}->SetValue($iss->{output_base} // '');
     $self->{iss_icon_path}->SetValue($iss->{icon_path} // '');
-    $self->{iss_install_scope}->SetSelection(defined($iss->{install_scope}) ? $iss->{install_scope} : 0);
+    $self->{iss_install_scope}->SetSelection(
+        defined($iss->{install_scope}) ? $iss->{install_scope} : 0
+    );
     $self->{iss_chk_desktop_icon}->SetValue($iss->{desktop_icon} ? 1 : 0);
     $self->{iss_chk_launch}->SetValue($iss->{launch_after} ? 1 : 0);
     $self->{iss_chk_kill_running}->SetValue($iss->{kill_running} ? 1 : 0);
     $self->{text_iss_exe}->SetValue($iss->{iss_exe} // '');
 
     my $makefile_text = $data->{makefile_text} // '';
-    my $txt_cmd_io    = exists $data->{txt_cmd_io} ? ($data->{txt_cmd_io} // '') : $makefile_text;
+    my $txt_cmd_io = exists $data->{txt_cmd_io}
+        ? ($data->{txt_cmd_io} // '')
+        : $makefile_text;
+
     $self->{txt_cmd_io}->SetValue($txt_cmd_io);
     $self->{txt_cmd_io}->SetInsertionPoint(0);
     $self->{txt_cmd_io}->ShowPosition(0);
 
-    $self->{_generated_makefile}   = $makefile_text;
-    $self->{_makefile_saved_path}  = _trim($data->{makefile_saved_path});
-    $self->{_iss_saved_path}       = _trim($data->{iss_saved_path});
-    $self->{_project_saved_path}   = _trim($path);
+    $self->{_generated_makefile}  = $makefile_text;
+    $self->{_makefile_saved_path} = _trim($data->{makefile_saved_path});
+    $self->{_iss_saved_path}      = _trim($data->{iss_saved_path});
+    $self->{_project_saved_path}  = _trim($path);
 
-    my $preview = $data->{iss_preview_text} // '';
-    $self->_set_preview_text($preview);
+    $self->_set_preview_text($data->{iss_preview_text} // '');
+    $self->_sync_derived_fields();
 
     $self->{_iss_has_compiled}        = 0;
     $self->{_iss_last_compile_exit}   = undef;
@@ -1142,25 +1385,21 @@ sub _apply_project_state {
 
     my $tab = $data->{selected_tab};
 
-    # Version 1 projects used the original three-tab layout:
-    #   0 = Makefile, 1 = Inno Setup, 2 = Help.
-    # Translate those indexes into the new four-tab layout.
-    if (($data->{version} // 1) < PROJECT_FORMAT_VERSION && defined $tab) {
+    # Only version 1 used the original three-tab indexes.
+    if ($version <= 1 && defined $tab) {
         my %old_to_new_tab = (
             0 => TAB_MAKEFILE,
             1 => TAB_INNO,
             2 => TAB_CREDITS,
         );
-
         $tab = $old_to_new_tab{$tab}
             if exists $old_to_new_tab{$tab};
     }
 
     if (defined($tab) && $self->{notebook_1}) {
         my $count = $self->{notebook_1}->GetPageCount;
-        if ($tab >= 0 && $tab < $count) {
-            $self->{notebook_1}->SetSelection($tab);
-        }
+        $self->{notebook_1}->SetSelection($tab)
+            if $tab >= 0 && $tab < $count;
     }
 }
 
@@ -1169,7 +1408,12 @@ sub _save_project_to_path {
     $path = _trim($path);
     return 0 if !$path;
 
-    my $json = JSON::PP->new->ascii->pretty->canonical->encode($self->_project_state_hash);
+    $self->_normalize_exe_configuration();
+    $self->_sync_derived_fields();
+
+    my $json = JSON::PP->new->ascii->pretty->canonical->encode(
+        $self->_project_state_hash
+    );
     return 0 if !$self->_write_text_file($path, $json);
 
     $self->{_project_saved_path} = $path;
@@ -1371,13 +1615,14 @@ sub run_exe_file {
         return;
     }
 
-    my $configured_exe = _trim(
-        $self->{makefile_exe}->GetValue // ''
-    );
+    $self->_normalize_exe_configuration();
+    $self->_sync_derived_fields();
 
-    if (!$configured_exe) {
+    my $exe_path = $self->_built_exe_path();
+
+    if (!$exe_path) {
         Wx::MessageBox(
-            "No EXE has been specified on the General Config tab.",
+            "Set Build Output Directory (DIST) and Executable Filename (EXE) on the General Config tab.",
             "Test EXE",
             wxOK | wxICON_INFORMATION,
             $self
@@ -1385,33 +1630,9 @@ sub run_exe_file {
         return;
     }
 
-    $configured_exe = _expand_env_vars_windows($configured_exe);
-
-    my $exe_path = $configured_exe;
-
-    # Resolve a relative EXE path against the project directory.
-    if (!File::Spec->file_name_is_absolute($exe_path)) {
-        my $base_dir =
-               _trim($self->{_proj_root})
-            || (
-                _trim($self->{_makefile_saved_path})
-                ? File::Basename::dirname(
-                    $self->{_makefile_saved_path}
-                )
-                : ''
-            )
-            || Cwd::getcwd();
-
-        $exe_path = File::Spec->rel2abs(
-            $exe_path,
-            $base_dir
-        );
-    }
-
     if (!-f $exe_path) {
         Wx::MessageBox(
-            "The EXE specified on the General Config tab was not found:\n\n"
-                . $exe_path,
+            "The configured built EXE was not found:\n\n$exe_path",
             "Test EXE",
             wxOK | wxICON_ERROR,
             $self
@@ -1422,66 +1643,43 @@ sub run_exe_file {
     my $run_dir = File::Basename::dirname($exe_path);
 
     $self->_append_io("\n=== Testing EXE ===\n");
-    $self->_append_io(
-        "[exe] General Config value=$configured_exe\n"
-    );
-    $self->_append_io("[exe] Resolved path=$exe_path\n\n");
+    $self->_append_io("[exe] Built EXE=$exe_path\n\n");
 
     my $q = $self->{_q};
 
-    threads->create(
-        sub {
-            my ($path, $dir, $qref) = @_;
+    threads->create(sub {
+        my ($path, $dir, $qref) = @_;
 
-            my $orig = eval { Cwd::getcwd() } || '';
-            my $exit = 0;
+        my $orig = eval { Cwd::getcwd() } || '';
+        my $exit = 0;
 
-            if (!chdir $dir) {
-                $qref->enqueue(
-                    "[worker][error] failed to chdir to '$dir': $!\n"
-                );
-                $qref->enqueue(
-                    "[exe done] exit_code=1\n"
-                );
-                return;
-            }
-
-            $qref->enqueue(
-                "[worker] current directory: $dir\n"
-            );
-            $qref->enqueue(
-                "[worker] starting: $path\n"
-            );
-
-            my $cmd = qq{"$path" 2>&1};
-
-            if (open(my $fh, "$cmd |")) {
-                while (my $line = <$fh>) {
-                    $qref->enqueue($line);
-                }
-
-                close($fh);
-                $exit = $? >> 8;
-            }
-            else {
-                $qref->enqueue(
-                    "[worker][error] failed to run EXE '$path': $!\n"
-                );
-                $exit = 127;
-            }
-
-            chdir $orig if $orig;
-
-            $qref->enqueue(
-                "[exe done] exit_code=$exit\n"
-            );
-
+        if (!chdir $dir) {
+            $qref->enqueue("[worker][error] failed to chdir to '$dir': $!\n");
+            $qref->enqueue("[exe done] exit_code=1\n");
             return;
-        },
-        $exe_path,
-        $run_dir,
-        $q
-    )->detach();
+        }
+
+        $qref->enqueue("[worker] current directory: $dir\n");
+        $qref->enqueue("[worker] starting: $path\n");
+
+        my $cmd = qq{"$path" 2>&1};
+
+        if (open(my $fh, "$cmd |")) {
+            while (my $line = <$fh>) {
+                $qref->enqueue($line);
+            }
+            close($fh);
+            $exit = $? >> 8;
+        }
+        else {
+            $qref->enqueue("[worker][error] failed to run EXE '$path': $!\n");
+            $exit = 127;
+        }
+
+        chdir $orig if $orig;
+        $qref->enqueue("[exe done] exit_code=$exit\n");
+        return;
+    }, $exe_path, $run_dir, $q)->detach();
 }
 
 sub load_makefile_file {
@@ -1508,21 +1706,29 @@ sub load_makefile_file {
 
     if ($dlg->ShowModal == Wx::wxID_OK()) {
         my $path = $dlg->GetPath;
-        my $text = '';
+        my $text = $self->_read_text_file($path);
 
-        if (open(my $fh, '<', $path)) {
-            local $/;
-            binmode($fh);
-            $text = <$fh>;
-            close($fh);
-
-            $self->{txt_cmd_io}->SetValue($text // '');
+        if ($text ne '') {
+            $self->{txt_cmd_io}->SetValue($text);
             $self->{txt_cmd_io}->SetInsertionPoint(0);
             $self->{txt_cmd_io}->ShowPosition(0);
 
-            $self->{_generated_makefile}  = $text // '';
+            $self->{_generated_makefile}  = $text;
             $self->{_makefile_saved_path} = $path;
 
+            # A loaded Makefile updates the canonical General Config values.
+            my $vars = $self->_parse_makefile_vars($text);
+            $self->{makefile_cbin}->SetValue($vars->{CBIN})
+                if defined $vars->{CBIN};
+            $self->{makefile_dist}->SetValue($vars->{DIST})
+                if defined $vars->{DIST};
+            $self->{makefile_release}->SetValue($vars->{RELEASE})
+                if defined $vars->{RELEASE};
+            $self->{makefile_exe}->SetValue($vars->{EXE})
+                if defined $vars->{EXE};
+
+            $self->_normalize_exe_configuration();
+            $self->_sync_derived_fields();
             $self->_reset_run_exe_state();
             $self->_refresh_run_makefile_button_state();
 
@@ -1532,7 +1738,8 @@ sub load_makefile_file {
                 wxOK | wxICON_INFORMATION,
                 $self
             );
-        } else {
+        }
+        else {
             Wx::MessageBox(
                 "Failed to load:\n$path\n\n$!",
                 "Load Makefile",
@@ -1691,15 +1898,10 @@ sub run_pp_autolink {
     # wxGlade: MyFrame::run_pp_autolink <event_handler>
     # end wxGlade
 
-    my $script = $self->{perl_script_path}->GetValue // '';
-    $script =~ s/^\s+|\s+$//g;
-
-    my $default_exe = $script;
-    $default_exe =~ s/\.pl//g;
-    $default_exe .= ".exe";
+    my $script = _trim($self->{perl_script_path}->GetValue // '');
 
     if (!$script) {
-        $self->_append_io("[error] No .pl selected.\n");
+        $self->_append_io("[error] No Perl source selected.\n");
         return;
     }
     if (!-f $script) {
@@ -1708,8 +1910,15 @@ sub run_pp_autolink {
     }
 
     $script = Cwd::abs_path($script) || $script;
-
     $self->_compute_project_layout_from_script($script);
+    $self->_ensure_default_exe_name_from_script($script);
+    $self->_normalize_exe_configuration();
+    $self->_sync_derived_fields();
+
+    my $default_exe = File::Basename::basename($script);
+    $default_exe =~ s/\.(?:pl|pm)\z//i;
+    $default_exe .= '.exe';
+
     $self->{_iss_pending_seed} = 1;
     my $cur = $self->{notebook_1}->GetSelection;
     if (defined($cur) && $cur == TAB_INNO) {
@@ -1721,28 +1930,28 @@ sub run_pp_autolink {
     $self->{_makefile_saved_path} = '';
     $self->_reset_run_exe_state();
     $self->_refresh_run_makefile_button_state();
-    $self->_append_io("\n=== Starting pp_ autolink scan ===\n\n");
+    $self->_append_io("\n=== Starting pp_autolink scan ===\n\n");
 
-    my $cbin = _trim($self->{makefile_cbin}->GetValue // '');
-    my $dist = _trim($self->{makefile_dist}->GetValue // '');
-    my $release = _trim($self->{makefile_release}->GetValue // '');
-    my $exe = _trim($self->{makefile_exe}->GetValue // '');
+    my $cbin    = _trim($self->{makefile_cbin}->GetValue // '');
+    my $dist    = _trim($self->{makefile_dist}->GetValue // '') || 'dist';
+    my $release = _trim($self->{makefile_release}->GetValue // '') || 'release';
+    my $exe     = $self->_configured_exe_name() || $default_exe;
+
+    # Ensure the canonical field reflects the exact filename used by Makefile.
+    $self->{makefile_exe}->ChangeValue($exe);
+    $self->_sync_derived_fields();
 
     my $q = $self->{_q};
 
     threads->create(sub {
-        my ($script_path, $qref, $ui_cbin, $ui_dist, $ui_release, $ui_exe, $default_exe) = @_;
+        my ($script_path, $qref, $ui_cbin, $ui_dist, $ui_release, $ui_exe) = @_;
 
         $qref->enqueue("[worker] thread started\n\n");
 
         my $dll_dir = _trim($ui_cbin);
-      
         if ($dll_dir && -d $dll_dir) {
             local $ENV{PATH} = $dll_dir . ';' . ($ENV{PATH} // '');
-      
-            $qref->enqueue(
-                "[worker] DLL search directory added to PATH: $dll_dir\n"
-            );
+            $qref->enqueue("[worker] DLL search directory added to PATH: $dll_dir\n");
         }
 
         my $pp_ver = `pp --version 2>&1`;
@@ -1750,40 +1959,36 @@ sub run_pp_autolink {
         $qref->enqueue("[worker] pp --version rc=$pp_rc\n$pp_ver");
 
         if ($pp_rc != 0) {
-            $qref->enqueue("[worker][error] 'pp_autolink' command failed. Is PAR::Packer installed and on PATH?\n");
+            $qref->enqueue("[worker][error] 'pp' failed. Is PAR::Packer installed and on PATH?\n");
             $qref->enqueue({ type => 'DONE', exit_code => $pp_rc });
             return;
         }
 
-        my @cmd = qw/pp_autolink -c -o tmp.exe/;
-        
-        my @required_wx_dlls = qw(
+        my @cmd = qw(pp_autolink -c -o tmp.exe);
+        my @explicit_wx_paths;
+
+        for my $dll_name (qw(
             wxbase32u_gcc_custom.dll
             wxmsw32u_core_gcc_custom.dll
             wxmsw32u_stc_gcc_custom.dll
-        );
-        
-        for my $dll_name (@required_wx_dlls) {
+        )) {
             my $dll_path = File::Spec->catfile($ui_cbin, $dll_name);
-        
             if (-f $dll_path) {
                 push @cmd, '--link', $dll_path;
+                push @explicit_wx_paths, $dll_path;
                 $qref->enqueue("[worker] Explicit Wx DLL: $dll_path\n");
             }
             else {
-                $qref->enqueue(
-                    "[worker][warning] Required Wx DLL not found: $dll_path\n"
-                );
+                $qref->enqueue("[worker][warning] Required Wx DLL not found: $dll_path\n");
             }
         }
-        
+
         push @cmd, $script_path;
 
-        my $pretty = join(' ', map { $_ =~ /\s/ ? qq{"$_"} : $_ } @cmd);
+        my $pretty = join(' ', map { /\s/ ? qq{"$_"} : $_ } @cmd);
         $qref->enqueue("[worker] cmd: $pretty\n");
 
-        my $cmdline = $pretty . " 2>&1";
-
+        my $cmdline = $pretty . ' 2>&1';
         $qref->enqueue("\n=== Finding DLLs and generating Makefile ===\n");
 
         my $exit = 0;
@@ -1791,77 +1996,85 @@ sub run_pp_autolink {
             $qref->enqueue("[worker] pipe opened, reading output...\n");
 
             my $line_count = 0;
-            my $CMD_line = "";
+            my $cmd_line = '';
             while (my $line = <$fh>) {
-                $line_count++;
+                ++$line_count;
                 $qref->enqueue($line);
-                if ($line =~ m/^CMD:/) {
-                    $CMD_line = $line;
-                }
+                $cmd_line = $line if $line =~ /^CMD:/;
             }
 
             my $perl_path = $^X;
-
-            my ($volume, $dirs, $file) = File::Spec->splitpath($perl_path);
+            my ($volume, $dirs) = File::Spec->splitpath($perl_path);
             my @parts = File::Spec->splitdir($dirs);
+            pop @parts for 1 .. 3;
+            push @parts, 'c', 'bin';
 
-            pop @parts;
-            pop @parts;
-            pop @parts;
-            push @parts, "c", "bin";
+            my $perl_root = File::Spec->catdir($volume, @parts);
+            my $filter    = $ui_cbin || $perl_root;
 
-            my $filter    = $volume . join("/", @parts);
-            my $perl_root = lc File::Spec->catdir($volume, @parts);
+            my @cmd_tokens = split /\s+/, $cmd_line;
+            my @filtered_libs = grep {
+                index(lc($_), lc($filter)) >= 0
+            } @cmd_tokens;
+            push @filtered_libs, @explicit_wx_paths;
 
-            my @cmd2 = split / /, $CMD_line;
-            my @filtered_libs = grep { m/\Q$filter\E/i } @cmd2;
+            my %seen;
+            @filtered_libs = grep {
+                my $key = lc($_ // '');
+                !$seen{$key}++;
+            } @filtered_libs;
 
-            $qref->enqueue("\n=== Perl moduled DLLs to include ===\n\n");
+            $qref->enqueue("\n=== Perl/Wx DLLs to include ===\n\n");
 
-            my $wxpar = 'wxpar -o $(EXE)';
-            foreach my $lib (@filtered_libs) {
-                $wxpar .= " --link $lib ";
+            my $filter_slash = $filter;
+            $filter_slash =~ s{\\}{/}g;
+
+            my $wxpar = 'wxpar -o "$(TARGET)"';
+            for my $lib (@filtered_libs) {
+                $lib =~ s/^["']|["']$//g;
+                next if !$lib;
+                $lib =~ s{\\}{/}g;
+                $lib =~ s/^\Q$filter_slash\E/\$(CBIN)/i;
+                $wxpar .= qq{ --link "$lib"};
                 $qref->enqueue("$lib\n");
             }
 
-            $wxpar .= " $script_path --gui";
+            my $source_for_make = $script_path;
+            $source_for_make =~ s{\\}{/}g;
+            $wxpar .= qq{ "$source_for_make" --gui};
 
-            $qref->enqueue("\n=== Makefile with 'wxpar' command ===\n\n");
+            $qref->enqueue("\n=== Makefile with wxpar command ===\n\n");
 
-            $wxpar =~ s/\\/\//g;
-            $wxpar =~ s/\Q$filter\E/\$\(CBIN\)/gi;
+            my $cbin    = $ui_cbin    || $perl_root;
+            my $dist    = $ui_dist    || 'dist';
+            my $release = $ui_release || 'release';
+            my $exe     = $ui_exe;
 
-            my $cbin = $ui_cbin;
-            my $dist = $ui_dist;
-            my $release = $ui_release;
-            my $exe = $ui_exe;
-
-            $cbin = $perl_root   if !$cbin;
-            $dist = 'dist'       if !$dist;
-            $release = 'release' if !$release;
-            $exe = $default_exe  if !$exe;
+            for ($cbin, $dist, $release) {
+                s{\\}{/}g;
+            }
 
             my $makefile = <<EOF;
 # -- BEGIN MAKEFILE --
 
-CBIN    := "$cbin"
+CBIN    := $cbin
 DIST    := $dist
 RELEASE := $release
 EXE     := $exe
+TARGET  := \$(DIST)/\$(EXE)
 
 clean:
-	\@if exist \$(DIST)\* del /Q /F \$(DIST)\* 2>NUL
-	\@if exist \$(RELEASE)\* del /Q /F \$(RELEASE)\* 2>NUL
+\t\@if exist "\$(DIST)\\*" del /Q /F "\$(DIST)\\*" 2>NUL
+\t\@if exist "\$(RELEASE)\\*" del /Q /F "\$(RELEASE)\\*" 2>NUL
 
 all: exe
 
 exe: prepdirs
-	$wxpar
-	\@move /Y \$(EXE) \$(DIST)\
+\t$wxpar
 
 prepdirs:
-	\@if not exist \$(DIST) mkdir \$(DIST)
-	\@if not exist \$(RELEASE) mkdir \$(RELEASE)
+\t\@if not exist "\$(DIST)" mkdir "\$(DIST)"
+\t\@if not exist "\$(RELEASE)" mkdir "\$(RELEASE)"
 # -- END MAKEFILE --
 
 EOF
@@ -1870,14 +2083,15 @@ EOF
             close($fh);
             $exit = $? >> 8;
             $qref->enqueue("[worker] pipe closed, lines=$line_count, rc=$exit\n");
-        } else {
+        }
+        else {
             $qref->enqueue("[worker][error] failed to run command pipe: $!\n");
             $exit = 127;
         }
 
         $qref->enqueue({ type => 'DONE', exit_code => $exit });
         return;
-    }, $script, $q, $cbin, $dist, $release, $exe, $default_exe)->detach();
+    }, $script, $q, $cbin, $dist, $release, $exe)->detach();
 }
 
 sub generate_iss_appid_guid {
@@ -1895,18 +2109,20 @@ sub select_iss_dist_exe {
 
     my $dlg = Wx::FileDialog->new(
         $self,
-        "Select EXE to install (dist output)",
-        "", "",
-        "Executable (*.exe)|*.exe|All files (*.*)|*.*",
+        'Select Built EXE',
+        $self->_configured_dist_path() || '',
+        $self->_configured_exe_name() || '',
+        'Executable (*.exe)|*.exe|All files (*.*)|*.*',
         Wx::wxFD_OPEN() | Wx::wxFD_FILE_MUST_EXIST()
     );
 
     if ($dlg->ShowModal == Wx::wxID_OK()) {
-        my $p = $dlg->GetPath;
-        if ($self->{_installer_dir}) {
-            $p = _abs2rel_if_possible($self->{_installer_dir}, $p);
-        }
-        $self->{iss_dist_exe_path}->SetValue($p);
+        my $path = $dlg->GetPath;
+        $self->{makefile_dist}->SetValue(
+            $self->_path_for_project_field(File::Basename::dirname($path))
+        );
+        $self->{makefile_exe}->SetValue(File::Basename::basename($path));
+        $self->_sync_derived_fields();
     }
 
     $dlg->Destroy;
@@ -1917,22 +2133,8 @@ sub select_iss_output_dir {
     # wxGlade: MyFrame::select_iss_output_dir <event_handler>
     # end wxGlade
 
-    my $dlg = Wx::DirDialog->new(
-        $self,
-        "Select OutputDir for installer EXE",
-        "",
-        Wx::wxDD_DEFAULT_STYLE()
-    );
-
-    if ($dlg->ShowModal == Wx::wxID_OK()) {
-        my $p = $dlg->GetPath;
-        if ($self->{_installer_dir}) {
-            $p = _abs2rel_if_possible($self->{_installer_dir}, $p);
-        }
-        $self->{iss_output_dir}->SetValue($p);
-    }
-
-    $dlg->Destroy;
+    # Compatibility alias for layouts that still expose the old Inno button.
+    return $self->select_makefile_release($event);
 }
 
 sub select_iss_icon_file {
@@ -1963,16 +2165,22 @@ sub select_iss_icon_file {
 sub _collect_iss_values {
     my ($self) = @_;
 
+    $self->_normalize_exe_configuration();
+    $self->_sync_derived_fields();
+
     my $app_name      = _trim($self->{iss_app_name}->GetValue);
-    my $app_exe       = _trim($self->{iss_app_exe}->GetValue);
+    my $app_exe       = $self->_configured_exe_name();
     my $app_version   = _trim($self->{iss_app_version}->GetValue);
     my $app_publisher = _trim($self->{iss_app_publisher}->GetValue);
 
     my $appid_raw     = _trim($self->{iss_appid}->GetValue);
-    my $dist_exe_path = _trim($self->{iss_dist_exe_path}->GetValue);
-    my $output_dir    = _trim($self->{iss_output_dir}->GetValue);
+    my $dist_exe_path = $self->_built_exe_path();
+    my $output_dir    = $self->_configured_release_path();
     my $output_base   = _trim($self->{iss_output_base}->GetValue);
     my $icon_path     = _trim($self->{iss_icon_path}->GetValue);
+
+    $output_base =~ s/\.exe\z//i;
+    $icon_path = $self->_resolve_project_file($icon_path) if $icon_path;
 
     my $scope_sel = $self->{iss_install_scope}->GetSelection;
     $scope_sel = 0 if !defined($scope_sel) || $scope_sel < 0;
@@ -2403,19 +2611,15 @@ sub run_app_installer {
     # wxGlade: MyFrame::run_app_installer <event_handler>
     # end wxGlade
 
-    my $installer = _trim($self->{_iss_last_installer_path});
+    $self->_sync_derived_fields();
 
-    if (!$installer) {
-        my $iss_path = _trim($self->{_iss_saved_path});
-        if ($iss_path) {
-            $installer = $self->_compute_expected_installer_path($iss_path);
-        }
-    }
+    my $installer = $self->_installer_exe_path();
+    $installer ||= _trim($self->{_iss_last_installer_path});
 
     if (!$installer) {
         Wx::MessageBox(
-            "No installer path is known yet.\nCompile the .iss first, or load/save the .iss so the output path can be determined.",
-            "Run Installer",
+            "Set Installer Output Directory (RELEASE) and Installer Base Filename first.",
+            "Test Installer",
             wxOK | wxICON_INFORMATION,
             $self
         );
@@ -2427,7 +2631,7 @@ sub run_app_installer {
     if (!-f $installer) {
         Wx::MessageBox(
             "Installer was not found:\n$installer",
-            "Run Installer",
+            "Test Installer",
             wxOK | wxICON_ERROR,
             $self
         );
@@ -2436,7 +2640,7 @@ sub run_app_installer {
 
     my $run_dir = File::Basename::dirname($installer);
 
-    $self->_append_io("\n=== Running Installer ===\n");
+    $self->_append_io("\n=== Testing Installer ===\n");
     $self->_append_io("[iss] Installer=$installer\n\n");
 
     my $q = $self->{_q};
@@ -2464,13 +2668,13 @@ sub run_app_installer {
             }
             close($fh);
             $exit = $? >> 8;
-        } else {
+        }
+        else {
             $qref->enqueue("[worker][error] failed to run installer '$path': $!\n");
             $exit = 127;
         }
 
         chdir $orig if $orig;
-
         $qref->enqueue("[installer done] exit_code=$exit\n");
         return;
     }, $installer, $run_dir, $q)->detach();
@@ -2644,47 +2848,59 @@ sub start_new_project {
     # wxGlade: MyFrame::start_new_project <event_handler>
     # end wxGlade
 
-    $self->{perl_script_path}->SetValue('') if $self->{perl_script_path};
-    $self->{txt_cmd_io}->SetValue('')       if $self->{txt_cmd_io};
+    $self->{perl_script_path}->ChangeValue('') if $self->{perl_script_path};
+    $self->{txt_cmd_io}->SetValue('')          if $self->{txt_cmd_io};
     $self->_set_preview_text('');
 
-    $self->{_iss_seeded_from_script}  = 0;
-    $self->{_iss_pending_seed}        = 0;
-    $self->{_script_abs}              = '';
-    $self->{_proj_root}               = '';
-    $self->{_installer_dir}           = '';
-    $self->{_dist_dir}                = '';
-    $self->{_release_dir}             = '';
-    $self->{_generated_makefile}      = '';
-    $self->{_makefile_saved_path}     = '';
-    $self->{_last_make_exit_code}     = undef;
-    $self->{_iss_saved_path}          = '';
-    $self->{_iss_last_installer_path} = '';
-    $self->{_iss_has_compiled}        = 0;
-    $self->{_iss_last_compile_exit}   = undef;
-    $self->{_project_saved_path}      = '';
+    $self->{_iss_seeded_from_script}   = 0;
+    $self->{_iss_pending_seed}         = 0;
+    $self->{_script_abs}               = '';
+    $self->{_proj_root}                = '';
+    $self->{_installer_dir}            = '';
+    $self->{_dist_dir}                 = '';
+    $self->{_release_dir}              = '';
+    $self->{_generated_makefile}       = '';
+    $self->{_makefile_saved_path}      = '';
+    $self->{_last_make_exit_code}      = undef;
+    $self->{_iss_saved_path}           = '';
+    $self->{_iss_last_installer_path}  = '';
+    $self->{_iss_has_compiled}         = 0;
+    $self->{_iss_last_compile_exit}    = undef;
+    $self->{_project_saved_path}       = '';
 
     $self->_reset_run_exe_state();
     $self->_apply_safe_default_paths();
 
-    $self->{iss_app_name}->SetValue('NHC Explorer')                      if $self->{iss_app_name};
-    $self->{iss_app_exe}->SetValue('nhc-explorer.exe')                   if $self->{iss_app_exe};
-    $self->{iss_app_version}->SetValue('1.0.0')                          if $self->{iss_app_version};
-    $self->{iss_app_publisher}->SetValue('Your Name or Organization')    if $self->{iss_app_publisher};
-    $self->{iss_appid}->SetValue('{{A4F83C2D-9C44-4F6D-A8E2-9F7C3B6D21F0}}') if $self->{iss_appid};
-    $self->{iss_output_base}->SetValue('nhc-explorer-setup')             if $self->{iss_output_base};
-    $self->{iss_icon_path}->SetValue('')                                 if $self->{iss_icon_path};
-    $self->{iss_install_scope}->SetSelection(0)                          if $self->{iss_install_scope};
-    $self->{iss_chk_desktop_icon}->SetValue(1)                           if $self->{iss_chk_desktop_icon};
-    $self->{iss_chk_launch}->SetValue(1)                                 if $self->{iss_chk_launch};
-    $self->{iss_chk_kill_running}->SetValue(1)                           if $self->{iss_chk_kill_running};
-    $self->{text_iss_exe}->SetValue('%LOCALAPPDATA%\\Programs\\Inno Setup 6\\ISCC.exe') if $self->{text_iss_exe};
+    $self->{iss_app_name}->SetValue('My Program')
+        if $self->{iss_app_name};
+    $self->{iss_app_version}->SetValue('1.0.0')
+        if $self->{iss_app_version};
+    $self->{iss_app_publisher}->SetValue('Perl Community Org')
+        if $self->{iss_app_publisher};
+    $self->{iss_appid}->SetValue('not yet generated ...')
+        if $self->{iss_appid};
+    $self->{iss_output_base}->SetValue('myprog-setup')
+        if $self->{iss_output_base};
+    $self->{iss_icon_path}->SetValue('')
+        if $self->{iss_icon_path};
+    $self->{iss_install_scope}->SetSelection(0)
+        if $self->{iss_install_scope};
+    $self->{iss_chk_desktop_icon}->SetValue(1)
+        if $self->{iss_chk_desktop_icon};
+    $self->{iss_chk_launch}->SetValue(1)
+        if $self->{iss_chk_launch};
+    $self->{iss_chk_kill_running}->SetValue(1)
+        if $self->{iss_chk_kill_running};
+    $self->{text_iss_exe}->SetValue(
+        '%LOCALAPPDATA%\\Programs\\Inno Setup 6\\ISCC.exe'
+    ) if $self->{text_iss_exe};
 
-    $self->{notebook_1}->SetSelection(TAB_GENERAL) if $self->{notebook_1};
+    $self->_sync_derived_fields();
+    $self->{notebook_1}->SetSelection(TAB_GENERAL)
+        if $self->{notebook_1};
     $self->_refresh_run_makefile_button_state();
     $self->_append_io("[project] Started new project.\n");
 }
-
 
 sub select_makefile_cbin {
     my ($self, $event) = @_;
@@ -2711,72 +2927,82 @@ sub select_makefile_dist {
     # wxGlade: MyFrame::select_makefile_dist <event_handler>
     # end wxGlade
 
+    my $current = $self->_configured_dist_path() || $self->_project_root_path();
     my $dlg = Wx::DirDialog->new(
         $self,
-        'Select DIST directory',
-        _trim($self->{makefile_dist}->GetValue),
+        'Select Build Output Directory (DIST)',
+        $current || '',
         Wx::wxDD_DEFAULT_STYLE()
     );
 
     if ($dlg->ShowModal == Wx::wxID_OK()) {
-        $self->{makefile_dist}->SetValue($dlg->GetPath);
+        $self->{makefile_dist}->SetValue(
+            $self->_path_for_project_field($dlg->GetPath)
+        );
+        $self->_sync_derived_fields();
     }
 
     $dlg->Destroy;
 }
-
 
 sub select_makefile_release {
     my ($self, $event) = @_;
     # wxGlade: MyFrame::select_makefile_release <event_handler>
     # end wxGlade
 
+    my $current = $self->_configured_release_path() || $self->_project_root_path();
     my $dlg = Wx::DirDialog->new(
         $self,
-        'Select RELEASE directory',
-        _trim($self->{makefile_release}->GetValue),
+        'Select Installer Output Directory (RELEASE)',
+        $current || '',
         Wx::wxDD_DEFAULT_STYLE()
     );
 
     if ($dlg->ShowModal == Wx::wxID_OK()) {
-        $self->{makefile_release}->SetValue($dlg->GetPath);
+        $self->{makefile_release}->SetValue(
+            $self->_path_for_project_field($dlg->GetPath)
+        );
+        $self->_sync_derived_fields();
     }
 
     $dlg->Destroy;
 }
-
 
 sub select_makefile_exe {
     my ($self, $event) = @_;
     # wxGlade: MyFrame::select_makefile_exe <event_handler>
     # end wxGlade
 
+    my $default_dir = $self->_configured_dist_path()
+        || $self->_project_root_path()
+        || '';
+    my $default_name = $self->_configured_exe_name() || 'myprog.exe';
+
     my $dlg = Wx::FileDialog->new(
         $self,
-        'Select EXE output path',
-        '',
-        '',
+        'Choose Executable Filename',
+        $default_dir,
+        $default_name,
         'Executable (*.exe)|*.exe|All files (*.*)|*.*',
-        Wx::wxFD_SAVE() | Wx::wxFD_OVERWRITE_PROMPT()
+        Wx::wxFD_SAVE()
     );
-
-    my $current = _trim($self->{makefile_exe}->GetValue);
-    if ($current) {
-        my $dir  = File::Basename::dirname($current);
-        my $file = File::Basename::basename($current);
-        eval { $dlg->SetDirectory($dir) if $dir; };
-        eval { $dlg->SetFilename($file) if $file; };
-    }
 
     if ($dlg->ShowModal == Wx::wxID_OK()) {
         my $path = $dlg->GetPath;
-        $path .= '.exe' if $path !~ /\.exe$/i;
-        $self->{makefile_exe}->SetValue($path);
+        $path .= '.exe' if $path !~ /\.exe\z/i;
+
+        my $chosen_dir = File::Basename::dirname($path);
+        my $chosen_exe = File::Basename::basename($path);
+
+        $self->{makefile_dist}->SetValue(
+            $self->_path_for_project_field($chosen_dir)
+        ) if $chosen_dir && $chosen_dir ne '.';
+        $self->{makefile_exe}->SetValue($chosen_exe);
+        $self->_sync_derived_fields();
     }
 
     $dlg->Destroy;
 }
-
 
 sub button_browse_pl {
     my ($self, $event) = @_;
