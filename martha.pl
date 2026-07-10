@@ -63,7 +63,7 @@ sub new {
     $self->{frame_menubar} = Wx::MenuBar->new();
     my $wxglade_tmp_menu;
     $wxglade_tmp_menu = Wx::Menu->new();
-    $self->{Open} = $wxglade_tmp_menu->Append(wxID_ANY, "Open (.pl,.pm) ...", "");
+    $self->{Open} = $wxglade_tmp_menu->Append(wxID_ANY, "Open Perl Source ...", "");
     $self->{menu_new_project} = $wxglade_tmp_menu->Append(wxID_ANY, "New Project", "");
     $self->{menu_open_project} = $wxglade_tmp_menu->Append(wxID_ANY, "Open Project ...", "");
     $self->{menu_save_project} = $wxglade_tmp_menu->Append(wxID_ANY, "Save Project", "");
@@ -90,7 +90,7 @@ sub new {
     
     $self->{general_config_sizer} = Wx::BoxSizer->new(wxVERTICAL);
     
-    my $general_config_help = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Choose the Perl source and configure the shared build paths used by Makefile generation and installer creation.");
+    my $general_config_help = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Select the Perl source once, then define the shared build output, executable name, release output, and DLL directory used by every tab.");
     $general_config_help->SetFont(Wx::Font->new(9, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, 0, ""));
     $self->{general_config_sizer}->Add($general_config_help, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
     
@@ -101,10 +101,10 @@ sub new {
     $general_source_title->SetFont(Wx::Font->new(9, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, 0, ""));
     $self->{general_config_sizer}->Add($general_source_title, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
     
-    $self->{makefile_source_grid} = Wx::FlexGridSizer->new(1, 2, 6, 8);
+    $self->{makefile_source_grid} = Wx::FlexGridSizer->new(0, 2, 6, 8);
     $self->{general_config_sizer}->Add($self->{makefile_source_grid}, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
     
-    my $label_1 = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Source");
+    my $label_1 = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Perl Source (.pl, .pm, or extensionless)");
     $self->{makefile_source_grid}->Add($label_1, 0, wxALIGN_CENTER_VERTICAL, 0);
     
     $self->{sizer_4} = Wx::BoxSizer->new(wxHORIZONTAL);
@@ -112,70 +112,85 @@ sub new {
     
     $self->{perl_script_path} = Wx::TextCtrl->new($self->{general_config_tab}, wxID_ANY, "");
     $self->{perl_script_path}->SetMinSize(Wx::Size->new(444, 23));
+    $self->{perl_script_path}->SetToolTip("The selected Perl source file. The filename is preserved exactly, including when it has no extension.");
     $self->{sizer_4}->Add($self->{perl_script_path}, 1, wxEXPAND, 0);
     
     $self->{button_browse_pl} = Wx::Button->new($self->{general_config_tab}, wxID_ANY, "Browse\N{U+2026}");
     $self->{sizer_4}->Add($self->{button_browse_pl}, 0, wxEXPAND|wxLEFT, 6);
     
-    my $general_build_paths_title = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Build and Packaging Paths");
+    my $general_lbl_project_root = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Project Root");
+    $self->{makefile_source_grid}->Add($general_lbl_project_root, 0, wxALIGN_CENTER_VERTICAL, 0);
+    
+    $self->{project_root_path} = Wx::TextCtrl->new($self->{general_config_tab}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
+    $self->{project_root_path}->SetToolTip("Derived from the directory containing the selected Perl source. Relative DIST and RELEASE values are resolved from this directory.");
+    $self->{makefile_source_grid}->Add($self->{project_root_path}, 1, wxEXPAND, 0);
+    
+    my $general_build_paths_title = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Shared Build and Packaging Configuration");
     $self->{general_config_sizer}->Add($general_build_paths_title, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
     
     $self->{makefile_vars_grid} = Wx::FlexGridSizer->new(0, 2, 6, 8);
     $self->{general_config_sizer}->Add($self->{makefile_vars_grid}, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
     
-    my $makefile_lbl_cbin = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Strawberry Perl DLL Bin (CBIN)");
+    my $makefile_lbl_cbin = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Strawberry Perl DLL Directory (CBIN)");
     $self->{makefile_vars_grid}->Add($makefile_lbl_cbin, 0, wxALIGN_CENTER_VERTICAL, 0);
     
     $self->{makefile_cbin_row} = Wx::BoxSizer->new(wxHORIZONTAL);
     $self->{makefile_vars_grid}->Add($self->{makefile_cbin_row}, 1, wxEXPAND, 0);
     
     $self->{makefile_cbin} = Wx::TextCtrl->new($self->{general_config_tab}, wxID_ANY, "C:\\sw\\pdl\\c\\bin");
-    $self->{makefile_cbin}->SetToolTip("Directory containing the Strawberry Perl DLLs used by pp_autolink/wxpar. The driver may also use this location when resolving helper binaries.");
+    $self->{makefile_cbin}->SetToolTip("Directory containing the Strawberry Perl and wxWidgets DLLs used by pp_autolink and wxpar.");
     $self->{makefile_cbin_row}->Add($self->{makefile_cbin}, 1, wxEXPAND, 0);
     
     $self->{makefile_btn_browse_cbin} = Wx::Button->new($self->{general_config_tab}, wxID_ANY, "Browse\N{U+2026}");
     $self->{makefile_cbin_row}->Add($self->{makefile_btn_browse_cbin}, 0, wxEXPAND|wxLEFT, 6);
     
-    my $makefile_lbl_dist = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Executable Output (DIST)");
+    my $makefile_lbl_dist = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Build Output Directory (DIST)");
     $self->{makefile_vars_grid}->Add($makefile_lbl_dist, 0, wxALIGN_CENTER_VERTICAL, 0);
     
     $self->{makefile_dist_row} = Wx::BoxSizer->new(wxHORIZONTAL);
     $self->{makefile_vars_grid}->Add($self->{makefile_dist_row}, 1, wxEXPAND, 0);
     
     $self->{makefile_dist} = Wx::TextCtrl->new($self->{general_config_tab}, wxID_ANY, "dist");
-    $self->{makefile_dist}->SetToolTip("Directory where the bundled executable is placed after the Makefile runs.");
+    $self->{makefile_dist}->SetToolTip("Directory where the bundled application executable is placed. Relative paths are resolved from Project Root.");
     $self->{makefile_dist_row}->Add($self->{makefile_dist}, 1, wxEXPAND, 0);
     
     $self->{makefile_btn_browse_dist} = Wx::Button->new($self->{general_config_tab}, wxID_ANY, "Browse\N{U+2026}");
     $self->{makefile_dist_row}->Add($self->{makefile_btn_browse_dist}, 0, wxEXPAND|wxLEFT, 6);
     
-    my $makefile_lbl_release = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Installer Output (RELEASE)");
+    my $makefile_lbl_exe = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Executable Filename (EXE)");
+    $self->{makefile_vars_grid}->Add($makefile_lbl_exe, 0, wxALIGN_CENTER_VERTICAL, 0);
+    
+    $self->{makefile_exe_row} = Wx::BoxSizer->new(wxHORIZONTAL);
+    $self->{makefile_vars_grid}->Add($self->{makefile_exe_row}, 1, wxEXPAND, 0);
+    
+    $self->{makefile_exe} = Wx::TextCtrl->new($self->{general_config_tab}, wxID_ANY, "myprog.exe");
+    $self->{makefile_exe}->SetToolTip("Filename only, such as kephra.exe. The full Built EXE Path is derived by combining DIST and EXE.");
+    $self->{makefile_exe_row}->Add($self->{makefile_exe}, 1, wxEXPAND, 0);
+    
+    $self->{makefile_btn_browse_exe} = Wx::Button->new($self->{general_config_tab}, wxID_ANY, "Set Name\N{U+2026}");
+    $self->{makefile_exe_row}->Add($self->{makefile_btn_browse_exe}, 0, wxEXPAND|wxLEFT, 6);
+    
+    my $general_lbl_built_exe = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Built EXE Path");
+    $self->{makefile_vars_grid}->Add($general_lbl_built_exe, 0, wxALIGN_CENTER_VERTICAL, 0);
+    
+    $self->{built_exe_path} = Wx::TextCtrl->new($self->{general_config_tab}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
+    $self->{built_exe_path}->SetToolTip("Computed from Project Root, Build Output Directory (DIST), and Executable Filename (EXE). This is the file tested by Test EXE and packaged by Inno Setup.");
+    $self->{makefile_vars_grid}->Add($self->{built_exe_path}, 1, wxEXPAND, 0);
+    
+    my $makefile_lbl_release = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Installer Output Directory (RELEASE)");
     $self->{makefile_vars_grid}->Add($makefile_lbl_release, 0, wxALIGN_CENTER_VERTICAL, 0);
     
     $self->{makefile_release_row} = Wx::BoxSizer->new(wxHORIZONTAL);
     $self->{makefile_vars_grid}->Add($self->{makefile_release_row}, 1, wxEXPAND, 0);
     
     $self->{makefile_release} = Wx::TextCtrl->new($self->{general_config_tab}, wxID_ANY, "release");
-    $self->{makefile_release}->SetToolTip("Directory where the finished Inno Setup installer is written.");
+    $self->{makefile_release}->SetToolTip("Directory where Inno Setup writes the finished installer executable. Relative paths are resolved from Project Root.");
     $self->{makefile_release_row}->Add($self->{makefile_release}, 1, wxEXPAND, 0);
     
     $self->{makefile_btn_browse_release} = Wx::Button->new($self->{general_config_tab}, wxID_ANY, "Browse\N{U+2026}");
     $self->{makefile_release_row}->Add($self->{makefile_btn_browse_release}, 0, wxEXPAND|wxLEFT, 6);
     
-    my $makefile_lbl_exe = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Executable Name / Path (EXE)");
-    $self->{makefile_vars_grid}->Add($makefile_lbl_exe, 0, wxALIGN_CENTER_VERTICAL, 0);
-    
-    $self->{makefile_exe_row} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{makefile_vars_grid}->Add($self->{makefile_exe_row}, 1, wxEXPAND, 0);
-    
-    $self->{makefile_exe} = Wx::TextCtrl->new($self->{general_config_tab}, wxID_ANY, "not yet specified ...");
-    $self->{makefile_exe}->SetToolTip("Executable name or output path used by the generated Makefile and the EXE test action.");
-    $self->{makefile_exe_row}->Add($self->{makefile_exe}, 1, wxEXPAND, 0);
-    
-    $self->{makefile_btn_browse_exe} = Wx::Button->new($self->{general_config_tab}, wxID_ANY, "Browse\N{U+2026}");
-    $self->{makefile_exe_row}->Add($self->{makefile_btn_browse_exe}, 0, wxEXPAND|wxLEFT, 6);
-    
-    my $general_helper_note = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "Helper programs used by the supplied driver include pp, pp_autolink, wxpar, and gmake. They may be resolved from the configured Strawberry Perl environment or PATH.");
+    my $general_helper_note = Wx::StaticText->new($self->{general_config_tab}, wxID_ANY, "General Config is authoritative: DIST + EXE determines the built application, and RELEASE determines where the installer is written. Other tabs display these values but do not redefine them.");
     $self->{general_config_sizer}->Add($general_helper_note, 0, wxALL|wxEXPAND, 8);
     
     $self->{general_config_sizer}->Add(10, 10, 1, wxEXPAND, 0);
@@ -185,12 +200,28 @@ sub new {
     
     $self->{makefile_main_sizer} = Wx::BoxSizer->new(wxVERTICAL);
     
-    my $makefile_tab_help = Wx::StaticText->new($self->{makefile_tab}, wxID_ANY, "Generate or load a Makefile, save it, run the build, and test the executable created by the build.");
+    my $makefile_tab_help = Wx::StaticText->new($self->{makefile_tab}, wxID_ANY, "Generate, load, save, and run the Makefile using General Config as the single source of build paths and executable naming.");
     $makefile_tab_help->SetFont(Wx::Font->new(9, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, 0, ""));
     $self->{makefile_main_sizer}->Add($makefile_tab_help, 0, wxALL|wxEXPAND, 8);
     
     my $makefile_tab_line_1 = Wx::StaticLine->new($self->{makefile_tab}, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0);
     $self->{makefile_main_sizer}->Add($makefile_tab_line_1, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
+    
+    $self->{makefile_target_grid} = Wx::FlexGridSizer->new(0, 2, 6, 8);
+    $self->{makefile_main_sizer}->Add($self->{makefile_target_grid}, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
+    
+    my $makefile_summary_lbl_source = Wx::StaticText->new($self->{makefile_tab}, wxID_ANY, "Perl Source");
+    $self->{makefile_target_grid}->Add($makefile_summary_lbl_source, 0, wxALIGN_CENTER_VERTICAL, 0);
+    
+    $self->{makefile_source_summary} = Wx::TextCtrl->new($self->{makefile_tab}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
+    $self->{makefile_target_grid}->Add($self->{makefile_source_summary}, 1, wxEXPAND, 0);
+    
+    my $makefile_summary_lbl_target = Wx::StaticText->new($self->{makefile_tab}, wxID_ANY, "Build Target");
+    $self->{makefile_target_grid}->Add($makefile_summary_lbl_target, 0, wxALIGN_CENTER_VERTICAL, 0);
+    
+    $self->{makefile_target_summary} = Wx::TextCtrl->new($self->{makefile_tab}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
+    $self->{makefile_target_summary}->SetToolTip("Mirrors Built EXE Path from General Config.");
+    $self->{makefile_target_grid}->Add($self->{makefile_target_summary}, 1, wxEXPAND, 0);
     
     $self->{makefile_action_row} = Wx::BoxSizer->new(wxHORIZONTAL);
     $self->{makefile_main_sizer}->Add($self->{makefile_action_row}, 0, wxBOTTOM|wxEXPAND|wxLEFT|wxRIGHT, 8);
@@ -210,7 +241,7 @@ sub new {
     $self->{makefile_action_row}->Add($self->{button_2}, 0, wxEXPAND|wxLEFT, 6);
     
     $self->{button_5} = Wx::Button->new($self->{makefile_tab}, wxID_ANY, "Test EXE");
-    $self->{button_5}->SetToolTip("Runs the executable identified by EXE after the Makefile has completed successfully.");
+    $self->{button_5}->SetToolTip("Runs the Built EXE Path derived from Build Output Directory (DIST) and Executable Filename (EXE) on General Config.");
     $self->{makefile_action_row}->Add($self->{button_5}, 0, wxEXPAND|wxLEFT, 6);
     
     my $makefile_preview_title = Wx::StaticText->new($self->{makefile_tab}, wxID_ANY, "Makefile / Build Output");
@@ -236,20 +267,17 @@ sub new {
     my $iss_line_1 = Wx::StaticLine->new($self->{inno_setup_tab}, wxID_ANY, wxDefaultPosition, wxDefaultSize, 0);
     $self->{iss_left_sizer}->Add($iss_line_1, 0, wxEXPAND|wxTOP, 6);
     
+    my $iss_shared_values_note = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "The application EXE, source EXE path, and installer output directory are derived from General Config and are read-only here.");
+    $self->{iss_left_sizer}->Add($iss_shared_values_note, 0, wxBOTTOM|wxEXPAND|wxTOP, 6);
+    
     $self->{iss_form_grid} = Wx::FlexGridSizer->new(0, 2, 6, 8);
     $self->{iss_left_sizer}->Add($self->{iss_form_grid}, 0, wxEXPAND, 0);
     
-    my $iss_lbl_appname = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "App Name");
+    my $iss_lbl_appname = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Application Name");
     $self->{iss_form_grid}->Add($iss_lbl_appname, 0, wxALIGN_CENTER_VERTICAL, 0);
     
     $self->{iss_app_name} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "My Program");
     $self->{iss_form_grid}->Add($self->{iss_app_name}, 1, wxEXPAND, 0);
-    
-    my $iss_lbl_exe = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "App EXE");
-    $self->{iss_form_grid}->Add($iss_lbl_exe, 0, wxALIGN_CENTER_VERTICAL, 0);
-    
-    $self->{iss_app_exe} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "myprog.exe");
-    $self->{iss_form_grid}->Add($self->{iss_app_exe}, 1, wxEXPAND, 0);
     
     my $iss_lbl_version = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Version");
     $self->{iss_form_grid}->Add($iss_lbl_version, 0, wxALIGN_CENTER_VERTICAL, 0);
@@ -275,37 +303,42 @@ sub new {
     $self->{iss_btn_gen_guid} = Wx::Button->new($self->{inno_setup_tab}, wxID_ANY, "Generate");
     $self->{iss_appid_row}->Add($self->{iss_btn_gen_guid}, 0, wxEXPAND|wxLEFT, 6);
     
-    my $iss_lbl_dist_exe = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Dist EXE Path");
+    my $iss_lbl_exe = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Application EXE Filename");
+    $self->{iss_form_grid}->Add($iss_lbl_exe, 0, wxALIGN_CENTER_VERTICAL, 0);
+    
+    $self->{iss_app_exe} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "myprog.exe", wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
+    $self->{iss_app_exe}->SetToolTip("Mirrors Executable Filename (EXE) from General Config.");
+    $self->{iss_form_grid}->Add($self->{iss_app_exe}, 1, wxEXPAND, 0);
+    
+    my $iss_lbl_dist_exe = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Source EXE to Package");
     $self->{iss_form_grid}->Add($iss_lbl_dist_exe, 0, wxALIGN_CENTER_VERTICAL, 0);
     
-    $self->{iss_dist_row} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{iss_form_grid}->Add($self->{iss_dist_row}, 1, wxEXPAND, 0);
+    $self->{iss_dist_exe_path} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
+    $self->{iss_dist_exe_path}->SetToolTip("Mirrors Built EXE Path from General Config. This file is copied into the installer.");
+    $self->{iss_form_grid}->Add($self->{iss_dist_exe_path}, 1, wxEXPAND, 0);
     
-    $self->{iss_dist_exe_path} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "");
-    $self->{iss_dist_row}->Add($self->{iss_dist_exe_path}, 1, wxEXPAND, 0);
-    
-    $self->{iss_btn_browse_dist} = Wx::Button->new($self->{inno_setup_tab}, wxID_ANY, "Browse\N{U+2026}");
-    $self->{iss_dist_row}->Add($self->{iss_btn_browse_dist}, 0, wxEXPAND|wxLEFT, 6);
-    
-    my $iss_lbl_outputdir = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "OutputDir");
+    my $iss_lbl_outputdir = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Installer Output Directory");
     $self->{iss_form_grid}->Add($iss_lbl_outputdir, 0, wxALIGN_CENTER_VERTICAL, 0);
     
-    $self->{iss_outdir_row} = Wx::BoxSizer->new(wxHORIZONTAL);
-    $self->{iss_form_grid}->Add($self->{iss_outdir_row}, 1, wxEXPAND, 0);
+    $self->{iss_output_dir} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
+    $self->{iss_output_dir}->SetToolTip("Mirrors Installer Output Directory (RELEASE) from General Config.");
+    $self->{iss_form_grid}->Add($self->{iss_output_dir}, 1, wxEXPAND, 0);
     
-    $self->{iss_output_dir} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "../release");
-    $self->{iss_outdir_row}->Add($self->{iss_output_dir}, 1, wxEXPAND, 0);
-    
-    $self->{iss_btn_browse_outdir} = Wx::Button->new($self->{inno_setup_tab}, wxID_ANY, "Browse\N{U+2026}");
-    $self->{iss_outdir_row}->Add($self->{iss_btn_browse_outdir}, 0, wxEXPAND|wxLEFT, 6);
-    
-    my $iss_lbl_outputbase = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "OutputBaseFilename");
+    my $iss_lbl_outputbase = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Installer Base Filename");
     $self->{iss_form_grid}->Add($iss_lbl_outputbase, 0, wxALIGN_CENTER_VERTICAL, 0);
     
     $self->{iss_output_base} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "myprog-setup");
+    $self->{iss_output_base}->SetToolTip("Filename without the .exe extension, such as kephra-setup.");
     $self->{iss_form_grid}->Add($self->{iss_output_base}, 1, wxEXPAND, 0);
     
-    my $iss_lbl_icon = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Icon (.ico)");
+    my $iss_lbl_installer_exe = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Installer EXE Path");
+    $self->{iss_form_grid}->Add($iss_lbl_installer_exe, 0, wxALIGN_CENTER_VERTICAL, 0);
+    
+    $self->{iss_installer_exe_path} = Wx::TextCtrl->new($self->{inno_setup_tab}, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_READONLY);
+    $self->{iss_installer_exe_path}->SetToolTip("Computed from Installer Output Directory (RELEASE) and Installer Base Filename. This is the file run by Test Installer.");
+    $self->{iss_form_grid}->Add($self->{iss_installer_exe_path}, 1, wxEXPAND, 0);
+    
+    my $iss_lbl_icon = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Application Icon (.ico)");
     $self->{iss_form_grid}->Add($iss_lbl_icon, 0, wxALIGN_CENTER_VERTICAL, 0);
     
     $self->{iss_icon_row} = Wx::BoxSizer->new(wxHORIZONTAL);
@@ -325,7 +358,7 @@ sub new {
     $self->{iss_form_grid}->Add($self->{iss_install_scope}, 1, wxEXPAND, 0);
     
     my $label_2 = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Inno Setup Compiler (ISCC.exe)");
-    $self->{iss_form_grid}->Add($label_2, 0, 0, 0);
+    $self->{iss_form_grid}->Add($label_2, 0, wxALIGN_CENTER_VERTICAL, 0);
     
     $self->{iss_icon_row_copy} = Wx::BoxSizer->new(wxHORIZONTAL);
     $self->{iss_form_grid}->Add($self->{iss_icon_row_copy}, 1, wxEXPAND, 0);
@@ -377,7 +410,7 @@ sub new {
     $self->{iss_right_sizer} = Wx::BoxSizer->new(wxVERTICAL);
     $self->{iss_main_sizer}->Add($self->{iss_right_sizer}, 1, wxALL|wxEXPAND, 6);
     
-    my $iss_lbl_preview = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Preview (.iss)");
+    my $iss_lbl_preview = Wx::StaticText->new($self->{inno_setup_tab}, wxID_ANY, "Inno Setup Script / Compiler Output");
     $iss_lbl_preview->SetFont(Wx::Font->new(9, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, 0, ""));
     $self->{iss_right_sizer}->Add($iss_lbl_preview, 0, wxEXPAND, 0);
     
@@ -417,6 +450,8 @@ sub new {
     
     $self->{inno_setup_tab}->SetSizer($self->{iss_main_sizer});
     
+    $self->{makefile_target_grid}->AddGrowableCol(1);
+    
     $self->{makefile_tab}->SetSizer($self->{makefile_main_sizer});
     
     $self->{makefile_vars_grid}->AddGrowableCol(1);
@@ -438,16 +473,14 @@ sub new {
     Wx::Event::EVT_BUTTON($self, $self->{button_browse_pl}->GetId, $self->can('select_perl_script'));
     Wx::Event::EVT_BUTTON($self, $self->{makefile_btn_browse_cbin}->GetId, $self->can('select_makefile_cbin'));
     Wx::Event::EVT_BUTTON($self, $self->{makefile_btn_browse_dist}->GetId, $self->can('select_makefile_dist'));
-    Wx::Event::EVT_BUTTON($self, $self->{makefile_btn_browse_release}->GetId, $self->can('select_makefile_release'));
     Wx::Event::EVT_BUTTON($self, $self->{makefile_btn_browse_exe}->GetId, $self->can('select_makefile_exe'));
+    Wx::Event::EVT_BUTTON($self, $self->{makefile_btn_browse_release}->GetId, $self->can('select_makefile_release'));
     Wx::Event::EVT_BUTTON($self, $self->{button_3}->GetId, $self->can('run_pp_autolink'));
     Wx::Event::EVT_BUTTON($self, $self->{button_1}->GetId, $self->can('save_makefile_file'));
     Wx::Event::EVT_BUTTON($self, $self->{button_4}->GetId, $self->can('load_makefile_file'));
     Wx::Event::EVT_BUTTON($self, $self->{button_2}->GetId, $self->can('run_makefile_file'));
     Wx::Event::EVT_BUTTON($self, $self->{button_5}->GetId, $self->can('run_exe_file'));
     Wx::Event::EVT_BUTTON($self, $self->{iss_btn_gen_guid}->GetId, $self->can('generate_iss_appid_guid'));
-    Wx::Event::EVT_BUTTON($self, $self->{iss_btn_browse_dist}->GetId, $self->can('select_iss_dist_exe'));
-    Wx::Event::EVT_BUTTON($self, $self->{iss_btn_browse_outdir}->GetId, $self->can('select_iss_output_dir'));
     Wx::Event::EVT_BUTTON($self, $self->{iss_btn_browse_icon}->GetId, $self->can('select_iss_icon_file'));
     Wx::Event::EVT_BUTTON($self, $self->{iss_btn_browse_exe}->GetId, $self->can('select_iss_exe'));
     Wx::Event::EVT_BUTTON($self, $self->{iss_btn_generate}->GetId, $self->can('generate_iss_preview'));
