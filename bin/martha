@@ -463,6 +463,10 @@ sub new {
     $self->{panel_1}->SetSizer($self->{sizer_1});
     
     $self->Layout();
+    my $environment_menu = $self->{frame_menubar}->GetMenu(0);
+    my $environment_item = Wx::MenuItem->new($environment_menu, wxID_ANY, "Select PCDEM Environment ...");
+    $environment_menu->Insert(5, $environment_item);
+    Wx::Event::EVT_MENU($self, $environment_item->GetId, $self->can('select_pcdem_environment'));
     Wx::Event::EVT_MENU($self, $self->{Open}->GetId, $self->can('select_perl_script'));
     Wx::Event::EVT_MENU($self, $self->{menu_new_project}->GetId, $self->can('start_new_project'));
     Wx::Event::EVT_MENU($self, $self->{menu_open_project}->GetId, $self->can('load_project_file'));
@@ -903,6 +907,113 @@ sub _drain_worker_queue {
 }
 
 
+sub _pcdem_environments {
+    my $base = $ENV{LOCALAPPDATA} // '';
+    die "LOCALAPPDATA is not set.\n" unless length $base;
+    my $file = File::Spec->catfile($base, 'PCDEM', 'martha-environments.json');
+    open my $fh, '<:raw', $file or die "Open PCDEM to prepare its environment list, then try again.\n";
+    my $json = do { local $/; <$fh> };
+    close $fh;
+    my $data = eval { JSON::PP::decode_json($json) };
+    die "PCDEM's environment list is unreadable or uses an unsupported schema.\n"
+        unless ref($data) eq 'HASH' && ($data->{schemaVersion} // '') eq '1'
+            && ref($data->{environments}) eq 'ARRAY';
+    return grep { ref($_) eq 'HASH' && ($_->{id} // '') =~ /\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/i } @{$data->{environments}};
+}
+
+sub select_pcdem_environment {
+    my ($self) = @_;
+    my @env;
+    if (!eval { @env = _pcdem_environments(); 1 }) {
+        Wx::MessageBox("$@", "PCDEM Environments", wxOK | wxICON_INFORMATION, $self);
+        return;
+    }
+    my @choices = ('Use the current Perl (manual setup)', map {
+        my $ready = ref($_->{readiness}) eq 'HASH' && $_->{readiness}{packaging}
+            ? 'packaging ready' : 'packaging tools incomplete';
+        join(' | ', $_->{name} // $_->{id}, $ready, $_->{root} // '')
+    } @env);
+    my $dlg = Wx::SingleChoiceDialog->new($self, "Choose the Perl environment for this project's builds.",
+        "PCDEM Environments", \@choices);
+    my ($current) = grep { $env[$_]{id} eq ($self->{_pcdem_environment_id} // '') } 0 .. $#env;
+    $dlg->SetSelection(defined $current ? $current + 1 : 0);
+    if ($dlg->ShowModal == wxID_OK) {
+        my $i = $dlg->GetSelection;
+        my $choice = $i > 0 ? $env[$i - 1] : undef;
+        $self->{_pcdem_environment_id} = $choice ? $choice->{id} : '';
+        if ($choice) {
+            $self->{makefile_cbin}->ChangeValue($choice->{toolchainBin} // '');
+            my $current_iscc = _expand_env_vars_windows($self->{text_iss_exe}->GetValue);
+            my $detected_iscc = _pcdem_inno_compiler();
+            $self->{text_iss_exe}->ChangeValue($detected_iscc) if $detected_iscc && !-f $current_iscc;
+        }
+        $self->_sync_derived_fields();
+        $self->_append_io("[environment] " . ($choice ? $choice->{root} : 'Manual setup') . "\n");
+    }
+    $dlg->Destroy;
+}
+
+sub _pcdem_inno_compiler {
+    return unless length($ENV{LOCALAPPDATA} // '');
+    my $file = File::Spec->catfile($ENV{LOCALAPPDATA}, 'PCDEM', 'martha-readiness.json');
+    open my $fh, '<:raw', $file or return;
+    my $json = do { local $/; <$fh> };
+    close $fh;
+    my $data = eval { JSON::PP::decode_json($json) };
+    return unless ref($data) eq 'HASH' && ($data->{schemaVersion} // '') eq '1'
+        && ref($data->{innoSetup}) eq 'HASH' && ($data->{innoSetup}{status} // '') eq 'found';
+    my $path = $data->{innoSetup}{path} // '';
+    return $path if $path =~ m{(?:^|[/\\])ISCC[.]exe\z}i
+        && File::Spec->file_name_is_absolute($path) && -f $path;
+}
+
+sub _pcdem_arg {
+    my ($value) = @_;
+    die "A build path contains unsupported Windows command characters.\n"
+        if !defined($value) || $value =~ /["%!?&|<>^()\r\n]/;
+    return qq{"$value"};
+}
+
+sub _pcdem_build_environment {
+    my ($self) = @_;
+    my $id = $self->{_pcdem_environment_id} // '';
+    return undef if $id eq '';
+    my ($env) = grep { $_->{id} eq $id } _pcdem_environments();
+    die "The selected PCDEM environment is unavailable. Choose another from the File menu.\n" unless $env;
+    die "Finish installing wxPerl and Martha packaging tools in PCDEM before building.\n"
+        unless ref($env->{readiness}) eq 'HASH' && $env->{readiness}{packaging} && ref($env->{tools}) eq 'HASH';
+    for my $file ($env->{activation}, $env->{perl}, @{$env->{tools}}{qw(gmake pp pp_autolink wxpar)}) {
+        die "A selected PCDEM tool is missing. Verify the environment again in PCDEM.\n" unless defined($file) && -f $file;
+        _pcdem_arg($file);
+        die "A selected PCDEM tool is outside its environment. Verify the environment again in PCDEM.\n"
+            unless _pcdem_inside($env->{root}, $file);
+    }
+    return $env;
+}
+
+sub _pcdem_bundled_dll {
+    my ($env, $path) = @_;
+    return defined($path) && $path =~ /\.dll\z/i && -f $path && _pcdem_inside($env->{root}, $path);
+}
+
+sub _pcdem_inside {
+    my ($directory, $path) = @_;
+    my $root = Cwd::abs_path($directory // '') // '';
+    my $file = Cwd::abs_path($path) // '';
+    tr{\\}{/} for ($root, $file);
+    $root =~ s{/+\z}{};
+    return length($root) && index(lc($file), lc("$root/")) == 0;
+}
+
+sub _pcdem_command {
+    my ($env, $tool, @args) = @_;
+    my $file = $env->{tools}{$tool};
+    my $invoke = $file =~ /\.(?:cmd|bat)\z/i ? 'call ' : '';
+    return 'set "NoDefaultCurrentDirectoryInExePath=1" && set "PERLLIB=" && call ' .
+        _pcdem_arg($env->{activation}) . ' && ' . $invoke .
+        join(' ', map { _pcdem_arg($_) } ($file, @args));
+}
+
 sub _apply_safe_default_paths {
     my ($self) = @_;
 
@@ -1288,6 +1399,7 @@ sub _project_state_hash {
 
     return {
         format              => 'wxperl-helper-project',
+        pcdem_environment_id => ($self->{_pcdem_environment_id} // ''),
         version             => PROJECT_FORMAT_VERSION,
         selected_tab        => ($self->{notebook_1} ? $self->{notebook_1}->GetSelection : TAB_GENERAL),
         perl_script_path    => ($self->{perl_script_path}->GetValue // ''),
@@ -1406,6 +1518,7 @@ sub _apply_project_state {
     $self->{_makefile_saved_path} = _trim($data->{makefile_saved_path});
     $self->{_iss_saved_path}      = _trim($data->{iss_saved_path});
     $self->{_project_saved_path}  = _trim($path);
+    $self->{_pcdem_environment_id} = _trim($data->{pcdem_environment_id});
 
     $self->_set_preview_text($data->{iss_preview_text} // '');
     $self->_sync_derived_fields();
@@ -1864,6 +1977,18 @@ sub run_makefile_file {
         return;
     }
 
+    my $pcdem = eval { $self->_pcdem_build_environment() };
+    if ($@) {
+        Wx::MessageBox("$@", "PCDEM Environments", wxOK | wxICON_ERROR, $self);
+        return;
+    }
+    my ($generated_id) = $makefile_text =~ /^# PCDEM environment: ([^\r\n]+)\r?$/m;
+    if (defined($generated_id) && (!$pcdem || $generated_id ne $pcdem->{id})) {
+        Wx::MessageBox("This Makefile was generated for a different Perl environment. Run the DLL scan again and save the new Makefile.",
+            "PCDEM Environments", wxOK | wxICON_INFORMATION, $self);
+        return;
+    }
+
     if (!$self->_write_makefile_file($makefile_path, $makefile_text)) {
         Wx::MessageBox(
             "Failed to update the saved Makefile before running.\n\n$!",
@@ -1895,7 +2020,7 @@ sub run_makefile_file {
     my $q = $self->{_q};
 
     threads->create(sub {
-        my ($dir, $qref) = @_;
+        my ($dir, $qref, $env) = @_;
 
         my $orig = eval { Cwd::getcwd() } || '';
         my $exit = 0;
@@ -1908,7 +2033,8 @@ sub run_makefile_file {
 
         $qref->enqueue("[worker] current directory: $dir\n");
 
-        if (open(my $fh, 'gmake all 2>&1 |')) {
+        my $command = $env ? _pcdem_command($env, 'gmake', 'all') : 'gmake all';
+        if (open(my $fh, "$command 2>&1 |")) {
             while (my $line = <$fh>) {
                 $qref->enqueue($line);
             }
@@ -1923,7 +2049,7 @@ sub run_makefile_file {
 
         $qref->enqueue({ type => 'MAKE_DONE', exit_code => $exit });
         return;
-    }, $make_dir, $q)->detach();
+    }, $make_dir, $q, $pcdem)->detach();
 }
 
 sub run_pp_autolink {
@@ -1958,6 +2084,11 @@ sub run_pp_autolink {
         $self->_seed_iss_fields_from_script();
     }
 
+    my $pcdem = eval { $self->_pcdem_build_environment() };
+    if ($@) {
+        Wx::MessageBox("$@", "PCDEM Environments", wxOK | wxICON_ERROR, $self);
+        return;
+    }
     $self->{button_3}->Enable(0);
     $self->{_generated_makefile}  = '';
     $self->{_makefile_saved_path} = '';
@@ -1965,7 +2096,7 @@ sub run_pp_autolink {
     $self->_refresh_run_makefile_button_state();
     $self->_append_io("\n=== Starting pp_autolink scan ===\n\n");
 
-    my $cbin    = _trim($self->{makefile_cbin}->GetValue // '');
+    my $cbin    = $pcdem ? $pcdem->{toolchainBin} : _trim($self->{makefile_cbin}->GetValue // '');
     my $dist    = _trim($self->{makefile_dist}->GetValue // '') || 'dist';
     my $release = _trim($self->{makefile_release}->GetValue // '') || 'release';
     my $exe     = $self->_configured_exe_name() || $default_exe;
@@ -1977,17 +2108,19 @@ sub run_pp_autolink {
     my $q = $self->{_q};
 
     threads->create(sub {
-        my ($script_path, $qref, $ui_cbin, $ui_dist, $ui_release, $ui_exe) = @_;
+        my ($script_path, $qref, $ui_cbin, $ui_dist, $ui_release, $ui_exe, $env) = @_;
 
         $qref->enqueue("[worker] thread started\n\n");
 
         my $dll_dir = _trim($ui_cbin);
-        if ($dll_dir && -d $dll_dir) {
-            local $ENV{PATH} = $dll_dir . ';' . ($ENV{PATH} // '');
+        local $ENV{PATH} = $ENV{PATH};
+        if (!$env && $dll_dir && -d $dll_dir) {
+            $ENV{PATH} = $dll_dir . ';' . ($ENV{PATH} // '');
             $qref->enqueue("[worker] DLL search directory added to PATH: $dll_dir\n");
         }
 
-        my $pp_ver = `pp --version 2>&1`;
+        my $pp_command = $env ? _pcdem_command($env, 'pp', '--version') : 'pp --version';
+        my $pp_ver = `$pp_command 2>&1`;
         my $pp_rc  = $? >> 8;
         $qref->enqueue("[worker] pp --version rc=$pp_rc\n$pp_ver");
 
@@ -1997,10 +2130,18 @@ sub run_pp_autolink {
             return;
         }
 
-        my @cmd = qw(pp_autolink -c -o tmp.exe);
+        my @cmd = qw(-c -o tmp.exe);
         my @explicit_wx_paths;
 
-        for my $dll_name (qw(
+        if ($env && ref($env->{nativeModules}) eq 'HASH' &&
+            ref($env->{nativeModules}{Wx}) eq 'HASH' && ref($env->{nativeModules}{Wx}{runtimeFiles}) eq 'ARRAY') {
+            for my $dll (@{$env->{nativeModules}{Wx}{runtimeFiles}}) {
+                next unless ref($dll) eq 'HASH' && _pcdem_bundled_dll($env, $dll->{path});
+                push @explicit_wx_paths, $dll->{path};
+                push @cmd, '--link', $dll->{path};
+            }
+        }
+        for my $dll_name (@explicit_wx_paths ? () : qw(
             wxbase32u_gcc_custom.dll
             wxmsw32u_core_gcc_custom.dll
             wxmsw32u_stc_gcc_custom.dll
@@ -2018,7 +2159,13 @@ sub run_pp_autolink {
 
         push @cmd, $script_path;
 
-        my $pretty = join(' ', map { /\s/ ? qq{"$_"} : $_ } @cmd);
+        my $pretty = eval { $env ? _pcdem_command($env, 'pp_autolink', @cmd) : 'pp_autolink ' .
+            join(' ', map { /\s/ ? qq{"$_"} : $_ } @cmd) };
+        if ($@) {
+            $qref->enqueue("[worker][error] $@");
+            $qref->enqueue({ type => 'DONE', exit_code => 1 });
+            return;
+        }
         $qref->enqueue("[worker] cmd: $pretty\n");
 
         my $cmdline = $pretty . ' 2>&1';
@@ -2045,10 +2192,15 @@ sub run_pp_autolink {
             my $perl_root = File::Spec->catdir($volume, @parts);
             my $filter    = $ui_cbin || $perl_root;
 
-            my @cmd_tokens = split /\s+/, $cmd_line;
-            my @filtered_libs = grep {
-                index(lc($_), lc($filter)) >= 0
-            } @cmd_tokens;
+            my @filtered_libs;
+            if ($env) {
+                while ($cmd_line =~ /(?:^|\s)(?:--link|-l)(?:[=\s]+)(?:"([^"]+)"|(\S+))/g) {
+                    my $path = $1 // $2;
+                    push @filtered_libs, $path if _pcdem_bundled_dll($env, $path);
+                }
+            } else {
+                @filtered_libs = grep { index(lc($_), lc($filter)) >= 0 } split /\s+/, $cmd_line;
+            }
             push @filtered_libs, @explicit_wx_paths;
 
             my %seen;
@@ -2062,7 +2214,13 @@ sub run_pp_autolink {
             my $filter_slash = $filter;
             $filter_slash =~ s{\\}{/}g;
 
-            my $wxpar = 'wxpar -o "$(TARGET)"';
+            my $wxpar = 'wxpar';
+            if ($env) {
+                my $tool = $env->{tools}{wxpar};
+                $tool =~ tr{\\}{/};
+                $wxpar = qq{"$tool"};
+            }
+            $wxpar .= ' -o "$(TARGET)"';
             for my $lib (@filtered_libs) {
                 $lib =~ s/^["']|["']$//g;
                 next if !$lib;
@@ -2087,9 +2245,10 @@ sub run_pp_autolink {
                 s{\\}{/}g;
             }
 
+            my $origin = $env ? "# PCDEM environment: $env->{id}\n" : '';
             my $makefile = <<EOF;
 # -- BEGIN MAKEFILE --
-
+$origin
 CBIN    := $cbin
 DIST    := $dist
 RELEASE := $release
@@ -2124,7 +2283,7 @@ EOF
 
         $qref->enqueue({ type => 'DONE', exit_code => $exit });
         return;
-    }, $script, $q, $cbin, $dist, $release, $exe)->detach();
+    }, $script, $q, $cbin, $dist, $release, $exe, $pcdem)->detach();
 }
 
 sub generate_iss_appid_guid {
@@ -2900,6 +3059,7 @@ sub start_new_project {
     $self->{_iss_has_compiled}         = 0;
     $self->{_iss_last_compile_exit}    = undef;
     $self->{_project_saved_path}       = '';
+    $self->{_pcdem_environment_id}     = '';
 
     $self->_reset_run_exe_state();
     $self->_apply_safe_default_paths();
