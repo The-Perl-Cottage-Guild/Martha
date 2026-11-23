@@ -1,0 +1,14 @@
+wxPerl Development Stack Installer
+Started: Wed 08/12/2026  0:48:36.66
+Script: C:\Users\user\Documents\wxPerl\wxperl-helper\windows-installer\Install-wxPerl-Dev.cmd
+[Wed 08/12/2026  0:48:47.71] Bundle=2b Current versions - PDL
+[Wed 08/12/2026  0:48:47.72] Strawberry=5.42.2.1 PDL ZIP at C:\sw\pdl-5.42.2.1
+[Wed 08/12/2026  0:48:47.73] Alien::wxWidgets=0.73
+[Wed 08/12/2026  0:48:47.75] Wx=3.010
+[Wed 08/12/2026  0:48:47.76] Packaging modules=PAR::Packer App::PP::Autolink Wx::Perl::Packager
+[Wed 08/12/2026  0:48:47.77] Wx::Demo=1
+[Wed 08/12/2026  0:48:47.78] installing or verifying Strawberry Perl
+[Wed 08/12/2026  0:49:52.18] activating the selected Strawberry Perl environment
+[Wed 08/12/2026  0:49:55.40] installing Alien::wxWidgets 0.73 from the Sciurius release
+[Wed 08/12/2026  2:10:45.68] installing Wx 3.010 from the Sciurius release
+[Wed 08/12/2026  2:23:20.84] FAILED during: installing Wx 3.010 from the Sciurius release
