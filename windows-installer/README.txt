@@ -18,13 +18,13 @@ The installer offers four ZIP-based Strawberry Perl + wxPerl bundles.
     2a  Current versions — Regular Perl
         Strawberry Perl 5.42.2.1 portable ZIP
         Alien::wxWidgets 0.73
-        Wx 3.009
+        Wx 3.010
         Status: experimental
 
     2b  Current versions — PDL
         Strawberry Perl 5.42.2.1 PDL ZIP
         Alien::wxWidgets 0.73
-        Wx 3.009
+        Wx 3.010
         Status: experimental
 
 Alien::wxWidgets and Wx are installed by cpanm using the exact Sciurius

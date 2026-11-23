@@ -30,10 +30,10 @@ echo   1b. Tested versions - PDL
 echo       Perl PDL 5.40.2.1 / Alien 0.71 / Wx 3.008
 echo.
 echo   2a. Current versions - Regular Perl
-echo       Perl 5.42.2.1 / Alien 0.73 / Wx 3.009
+echo       Perl 5.42.2.1 / Alien 0.73 / Wx 3.010
 echo.
 echo   2b. Current versions - PDL
-echo       Perl PDL 5.42.2.1 / Alien 0.73 / Wx 3.009
+echo       Perl PDL 5.42.2.1 / Alien 0.73 / Wx 3.010
 exit /b 0
 
 :list
@@ -46,10 +46,10 @@ echo.
 echo   1b  Tested PDL       5.40.2.1 / 0.71 / 3.008
 echo       Default: C:\sw\pdl-5.40.2.1
 echo.
-echo   2a  Current Regular  5.42.2.1 / 0.73 / 3.009
+echo   2a  Current Regular  5.42.2.1 / 0.73 / 3.010
 echo       Default: C:\sw\perl-5.42.2.1
 echo.
-echo   2b  Current PDL      5.42.2.1 / 0.73 / 3.009
+echo   2b  Current PDL      5.42.2.1 / 0.73 / 3.010
 echo       Default: C:\sw\pdl-5.42.2.1
 exit /b 0
 
@@ -114,8 +114,8 @@ set "SP_ARCHIVE=strawberry-perl-5.42.2.1-64bit-portable.zip"
 set "SP_URL=https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54221_64bit/strawberry-perl-5.42.2.1-64bit-portable.zip"
 set "ALIEN_VERSION=0.73"
 set "ALIEN_URL=https://github.com/sciurius/perl-Alien-wxWidgets/releases/download/R0.73/Alien-wxWidgets-0.73.tar.gz"
-set "WX_VERSION=3.009"
-set "WX_URL=https://github.com/sciurius/wxPerl/releases/download/R3.009/Wx-3.009.tar.gz"
+set "WX_VERSION=3.010"
+set "WX_URL=https://github.com/sciurius/wxPerl/releases/download/R3.010/Wx-3.010.tar.gz"
 set "DEFAULT_INSTALL_DIR=C:\sw\perl-5.42.2.1"
 set "REQUIRE_PDL=0"
 exit /b 0
@@ -134,8 +134,8 @@ set "SP_ARCHIVE=strawberry-perl-5.42.2.1-64bit-PDL.zip"
 set "SP_URL=https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54221_64bit/strawberry-perl-5.42.2.1-64bit-PDL.zip"
 set "ALIEN_VERSION=0.73"
 set "ALIEN_URL=https://github.com/sciurius/perl-Alien-wxWidgets/releases/download/R0.73/Alien-wxWidgets-0.73.tar.gz"
-set "WX_VERSION=3.009"
-set "WX_URL=https://github.com/sciurius/wxPerl/releases/download/R3.009/Wx-3.009.tar.gz"
+set "WX_VERSION=3.010"
+set "WX_URL=https://github.com/sciurius/wxPerl/releases/download/R3.010/Wx-3.010.tar.gz"
 set "DEFAULT_INSTALL_DIR=C:\sw\pdl-5.42.2.1"
 set "REQUIRE_PDL=1"
 exit /b 0
