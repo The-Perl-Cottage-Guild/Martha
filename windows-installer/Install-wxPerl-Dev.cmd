@@ -33,13 +33,13 @@ set "WITH_DEMO="
 set "PAUSE_ON_EXIT=1"
 set "LIST_ONLY=0"
 set "CURRENT_STEP=initialization"
+set "DIAGNOSTICS=0"
+set "MARTHA_TRACE_DIR="
+set "MARTHA_TRACE_SCRIPT=%~f0"
+set "MARTHA_TRACE_HELPER=%SCRIPT_DIR%Write-wxPerl-Diagnostics.ps1"
 
 rem These values are loaded from wxperl-bundles.cmd.
 call :clear_profile
-
-> "%LOGFILE%" echo wxPerl Development Stack Installer
->>"%LOGFILE%" echo Started: %DATE% %TIME%
->>"%LOGFILE%" echo Script: %~f0
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -103,6 +103,11 @@ if /I "%~1"=="--no-demo" (
     shift
     goto parse_args
 )
+if /I "%~1"=="--diagnostics" (
+    set "DIAGNOSTICS=1"
+    shift
+    goto parse_args
+)
 if /I "%~1"=="--no-pause" (
     set "PAUSE_ON_EXIT=0"
     shift
@@ -120,6 +125,18 @@ echo ERROR: Unknown option: %~1
 goto usage_error
 
 :args_done
+if "%DIAGNOSTICS%"=="1" (
+    for /f "delims=" %%D in ('powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%MARTHA_TRACE_HELPER%" start') do set "MARTHA_TRACE_DIR=%%D"
+    if not defined MARTHA_TRACE_DIR (
+        echo ERROR: Could not initialize the diagnostic logs.
+        exit /b 1
+    )
+)
+if defined MARTHA_TRACE_DIR set "LOGFILE=%MARTHA_TRACE_DIR%\installer-status.log"
+> "%LOGFILE%" echo wxPerl Development Stack Installer
+>>"%LOGFILE%" echo Started: %DATE% %TIME%
+>>"%LOGFILE%" echo Script: %~f0
+if defined MARTHA_TRACE_DIR echo Diagnostic logs: "%MARTHA_TRACE_DIR%"
 if not exist "%BUNDLE_FILE%" (
     echo ERROR: Bundle definition file was not found:
     echo   "%BUNDLE_FILE%"
@@ -247,6 +264,7 @@ if errorlevel 1 goto fail
 
 set "CURRENT_STEP=activating the selected Strawberry Perl environment"
 call :log "%CURRENT_STEP%"
+if defined MARTHA_TRACE_DIR call :trace_snapshot before-activation
 call :activate_environment
 if errorlevel 1 goto fail
 
@@ -359,6 +377,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
+if defined MARTHA_TRACE_DIR if not exist "%INSTALL_DIR%\relocation.pl.bat" call :log "Archive did not supply relocation.pl.bat"
 if exist "%INSTALL_DIR%\relocation.pl.bat" call :run_relocation
 if errorlevel 1 exit /b 1
 
@@ -374,6 +393,7 @@ pushd "%INSTALL_DIR%"
 call relocation.pl.bat
 set "RC=%ERRORLEVEL%"
 popd
+if defined MARTHA_TRACE_DIR call :log "relocation.pl.bat exit code: %RC%"
 if not "%RC%"=="0" (
     echo ERROR: relocation.pl.bat failed with exit code %RC%.
     exit /b 1
@@ -493,7 +513,11 @@ echo.
 echo cpanm --verbose %ALIEN_URL%
 echo.
 
-call cpanm --verbose "%ALIEN_URL%"
+if defined MARTHA_TRACE_DIR (
+    call :trace_cpanm alien "%ALIEN_URL%"
+) else (
+    call cpanm --verbose "%ALIEN_URL%"
+)
 if errorlevel 1 (
     echo ERROR: Alien::wxWidgets %ALIEN_VERSION% installation failed.
     exit /b 1
@@ -510,7 +534,11 @@ echo.
 echo cpanm --verbose %WX_URL%
 echo.
 
-call cpanm --verbose "%WX_URL%"
+if defined MARTHA_TRACE_DIR (
+    call :trace_cpanm wx "%WX_URL%"
+) else (
+    call cpanm --verbose "%WX_URL%"
+)
 if errorlevel 1 (
     echo ERROR: Wx %WX_VERSION% installation failed.
     echo The installer intentionally did not use --force or --notest.
@@ -719,6 +747,21 @@ if "%NP_VALUE:~-1%"=="\" set "NP_VALUE=%NP_VALUE:~0,-1%"
 set "%NP_NAME%=%NP_VALUE%"
 exit /b 0
 
+:trace_snapshot
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%MARTHA_TRACE_HELPER%" snapshot "%~1"
+if errorlevel 1 echo Warning: could not record diagnostic snapshot %~1.
+exit /b 0
+
+:trace_cpanm
+call :trace_snapshot before-%~1
+echo Capturing %~1 build output in "%MARTHA_TRACE_DIR%\%~1-console.log"
+call cpanm --verbose "%~2" > "%MARTHA_TRACE_DIR%\%~1-console.log" 2>&1
+set "TRACE_BUILD_RC=%ERRORLEVEL%"
+call :log "cpanm %~1 exit code: %TRACE_BUILD_RC%"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%MARTHA_TRACE_HELPER%" collect "%~1"
+if errorlevel 1 echo Warning: could not copy the cpanm work log for %~1.
+exit /b %TRACE_BUILD_RC%
+
 :log
 >>"%LOGFILE%" echo [%DATE% %TIME%] %~1
 exit /b 0
@@ -741,6 +784,7 @@ echo   --with-demo          Install Wx::Demo
 echo   --no-demo            Do not install Wx::Demo
 echo   --list               Display all bundle definitions
 echo   --no-pause           Do not pause before exit
+echo   --diagnostics        Save build output and environment snapshots in TEMP
 echo   --help, /?           Show this help
 echo.
 call "%BUNDLE_FILE%" list

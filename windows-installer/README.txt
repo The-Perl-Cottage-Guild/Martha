@@ -148,3 +148,18 @@ and records the installed profile in:
 
 PowerShell is used only for downloading and ZIP extraction. No 7-Zip
 installation is required.
+
+Diagnostic baseline
+-------------------
+
+Run from a normal Command Prompt on a signed-in desktop. Use a fresh
+installation folder. Example for bundle 1a:
+
+  Install-wxPerl-Dev.cmd --bundle 1a --dir "G:\Perls\perl-1a-martha-baseline" --defaults --no-demo --no-pause --diagnostics
+
+The script prints a unique diagnostic folder in TEMP. Alien and Wx output
+goes to their respective console log files. The folder also contains the
+installer status, environment snapshots, cpanm build logs when available,
+and the original cpanm work paths. The build tree stays in the install
+directory. The diagnostic logs include local paths and selected environment
+settings. Review the folder contents before sharing.
