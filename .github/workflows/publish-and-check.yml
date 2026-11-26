@@ -18,6 +18,23 @@ jobs:
           if ! gh release view v0.003 >/dev/null 2>&1; then
             gh release create v0.003 --verify-tag --title 'App::Martha 0.003' --notes 'Create an editable wxGlade project with martha --example NEW_DIRECTORY.' App-Martha-0.003.tar.gz
           fi
+  editable:
+    runs-on: windows-2022
+    needs: publish
+    steps:
+      - name: Test read-only templates from the released archive
+        shell: pwsh
+        run: |
+          curl.exe -fsSL -o martha.tar.gz https://github.com/The-Perl-Cottage-Guild/Martha/releases/download/v0.003/App-Martha-0.003.tar.gz
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          tar.exe xf martha.tar.gz
+          Set-Location App-Martha-0.003
+          $dir = 'lib/auto/share/dist/App-Martha'
+          New-Item -Type Directory -Force $dir
+          Copy-Item -Recurse share/roundtrip $dir
+          Get-ChildItem "$dir/roundtrip" -File | ForEach-Object { $_.IsReadOnly = $true }
+          perl -Ilib t/example.t
+          exit $LASTEXITCODE
   windows:
     needs: publish
     runs-on: windows-2022
@@ -61,7 +78,6 @@ jobs:
           set "WXDIR="
           set "WXWIN="
           set "PERL_CPANM_HOME=%RUNNER_TEMP%\martha-cpanm"
-          set "MAKEFLAGS=-j4"
           "%PERL%" "%CPANM%" --verbose --no-notest Alien-wxWidgets-0.71.tar.gz > alien.log 2>&1 || exit /b 1
           set "MAKEFLAGS="
           "%PERL%" "%CPANM%" --verbose --notest Wx-3.008.tar.gz > wx.log 2>&1 || exit /b 1
