@@ -7,7 +7,7 @@ use File::Copy qw(copy);
 use File::ShareDir qw(dist_dir);
 use File::Spec;
 
-our $VERSION = '0.002';
+our $VERSION = '0.003';
 
 sub create_example {
     my ($directory) = @_;
@@ -18,7 +18,11 @@ sub create_example {
     my @copied;
     for my $name (qw(demo.wxg DemoFrame.pm app.pl)) {
         my $destination = File::Spec->catfile($directory, $name);
-        unless (copy(File::Spec->catfile($source, $name), $destination)) {
+        my $template = File::Spec->catfile($source, $name);
+        # An open source handle copies the bytes without inheriting the
+        # installed template's Windows read-only attribute.
+        my $input;
+        unless (open($input, '<:raw', $template) and copy($input, $destination)) {
             my $error = $!;
             unlink $destination, @copied;
             rmdir $directory;

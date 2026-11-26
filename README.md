@@ -7,7 +7,7 @@ Run `martha` in a wxPerl-enabled Strawberry Perl environment to open the Windows
 In the selected PGDEM environment's command prompt, install the release and create a working copy in a new directory:
 
 ```bat
-perl -S cpanm https://raw.githubusercontent.com/The-Perl-Cottage-Guild/wxPerl-Helper/dist-0.002/App-Martha-0.002.tar.gz
+perl -S cpanm https://github.com/The-Perl-Cottage-Guild/Martha/releases/download/v0.003/App-Martha-0.003.tar.gz
 perl -MApp::Martha -MWx -e "print qq(Perl: $^X\nMartha: $App::Martha::VERSION at $INC{'App/Martha.pm'}\nWx: $Wx::VERSION\n)"
 martha --example roundtrip
 cd roundtrip
