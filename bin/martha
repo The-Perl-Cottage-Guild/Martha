@@ -3070,5 +3070,13 @@ sub OnInit {
 
 package main;
 
+if (@ARGV && $ARGV[0] eq '--example') {
+    die "Usage: martha --example NEW_DIRECTORY\n" unless @ARGV == 2;
+    require App::Martha;
+    my $directory = App::Martha::create_example($ARGV[1]);
+    print "Created $directory. Open demo.wxg in wxGlade, edit app.pl for behavior, and run perl app.pl.\n";
+    exit 0;
+}
+
 my $app = MyApp->new();
 $app->MainLoop();
