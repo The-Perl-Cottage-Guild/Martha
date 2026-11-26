@@ -1,0 +1,116 @@
+name: App-Martha 0.003 release
+on:
+  push:
+    branches: [publish-martha-0.003]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo '057a4157ea6ced3c079c4970b106079d207c95ab5b020e248d49011f806b63a0  App-Martha-0.003.tar.gz' | sha256sum -c -
+          if ! gh release view v0.003 >/dev/null 2>&1; then
+            gh release create v0.003 --verify-tag --title 'App::Martha 0.003' --notes 'Create an editable wxGlade project with martha --example NEW_DIRECTORY.' App-Martha-0.003.tar.gz
+          fi
+  windows:
+    needs: publish
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: toolkit
+        with:
+          path: C:\martha-perl
+          key: strawberry-1a-wx-3.008-2022-v1
+      - name: Fetch PGDEM recipe 1a sources
+        if: steps.toolkit.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $recipe = @(
+            @('https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54021_64bit_UCRT/strawberry-perl-5.40.2.1-64bit-portable.zip','7707700d5ad027773b775134fe48cd9610abf221433fcfb68c8eb0ec9c6fde8c'),
+            @('https://github.com/sciurius/perl-Alien-wxWidgets/releases/download/R0.71/Alien-wxWidgets-0.71.tar.gz','9876ff69dd348193842fb1a282e045a90ac5f1d09d4216e010d3b33a25b85490'),
+            @('https://github.com/sciurius/wxPerl/releases/download/R3.008/Wx-3.008.tar.gz','a5ba4314a2d2d695fe4de6d544c3aeea91bbc92638ae3ae6d34d6e1844063470')
+          )
+          foreach ($asset in $recipe) {
+            $file = Split-Path -Leaf $asset[0]
+            curl.exe -fLsS --retry 2 -o $file $asset[0]
+            if ($LASTEXITCODE -or (Get-FileHash $file).Hash -ne $asset[1]) { throw "Download failed for $file" }
+          }
+          New-Item -Type Directory C:\martha-perl
+          tar.exe -xf strawberry-perl-5.40.2.1-64bit-portable.zip -C C:\martha-perl
+          if ($LASTEXITCODE) { throw 'Strawberry extraction failed' }
+      - name: Build PGDEM recipe 1a dependencies
+        if: steps.toolkit.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          set "PATH=%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\WindowsPowerShell\v1.0"
+          set "SHELL=%ComSpec%"
+          set "MAKESHELL=%ComSpec%"
+          set "MAKEFLAGS="
+          set "MFLAGS="
+          call C:\martha-perl\portableshell.bat /SETENV
+          set "PERL=C:\martha-perl\perl\bin\perl.exe"
+          set "CPANM=C:\martha-perl\perl\bin\cpanm"
+          set "WXDIR="
+          set "WXWIN="
+          set "PERL_CPANM_HOME=%RUNNER_TEMP%\martha-cpanm"
+          set "MAKEFLAGS=-j4"
+          "%PERL%" "%CPANM%" --verbose --no-notest Alien-wxWidgets-0.71.tar.gz > alien.log 2>&1 || exit /b 1
+          set "MAKEFLAGS="
+          "%PERL%" "%CPANM%" --verbose --notest Wx-3.008.tar.gz > wx.log 2>&1 || exit /b 1
+      - uses: actions/cache/save@v4
+        if: steps.toolkit.outputs.cache-hit != 'true'
+        with:
+          path: C:\martha-perl
+          key: strawberry-1a-wx-3.008-2022-v1
+      - name: Install released Martha with selected Perl and cpanm
+        shell: cmd
+        run: |
+          set "PATH=%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\WindowsPowerShell\v1.0"
+          set "SHELL=%ComSpec%"
+          set "MAKESHELL=%ComSpec%"
+          set "MAKEFLAGS="
+          set "MFLAGS="
+          call C:\martha-perl\portableshell.bat /SETENV
+          set "PERL=C:\martha-perl\perl\bin\perl.exe"
+          set "CPANM=C:\martha-perl\perl\bin\cpanm"
+          set "WXDIR="
+          set "WXWIN="
+          "%PERL%" "%CPANM%" --verbose https://github.com/The-Perl-Cottage-Guild/Martha/releases/download/v0.003/App-Martha-0.003.tar.gz > martha.log 2>&1 || exit /b 1
+          "%PERL%" -MWx -MApp::Martha -e "print qq(Perl $^X\nWx $Wx::VERSION\nMartha $App::Martha::VERSION $INC{'App/Martha.pm'}\n); die unless $App::Martha::VERSION eq '0.003' and $INC{'App/Martha.pm'} =~ m{^C:[/\\]martha-perl[/\\]}i" > identity.log || exit /b 1
+          type identity.log
+          call martha --example roundtrip || exit /b 1
+          "%PERL%" -c roundtrip\app.pl || exit /b 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Exercise installed project before and after wxGlade regeneration
+        shell: pwsh
+        run: |
+          python -m pip install wxPython==4.2.2 pywinauto==0.6.9
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git clone --quiet https://github.com/wxGlade/wxGlade.git
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git -C wxGlade checkout --quiet 4942b5a5e042b7ac4d794e5f3067649c8c5f0f74
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $python = (Get-Command python.exe).Source
+          $env:PATH = 'C:\martha-perl\perl\site\bin;C:\martha-perl\perl\bin;C:\martha-perl\c\bin;' + $env:PATH
+          & $python qa/windows-click.py 2>&1 | Tee-Object native-click.log
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-install-logs
+          path: |
+            alien.log
+            wx.log
+            martha.log
+            identity.log
+            native-click.log
